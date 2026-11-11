@@ -1,5 +1,7 @@
 # TLC — tags, logs, comments (& approvals & ownership & entities)
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](docs/example-world.md).
+
 One small service that gives *other* services the cross-cutting stuff they keep re-building badly:
 tag a row, hang a log on it, discuss it, say who owns which aspect of it, and gate a change to it on
 an approval rule. The source

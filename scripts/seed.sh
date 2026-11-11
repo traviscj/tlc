@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# The names used here are explained in docs/example-world.md.
 # Seeds the scenario the /demo page and the console screenshots use: sentinel/proposed_changes/1234 mid-approval.
 # Safe to re-run: creates that already exist are skipped; comments/logs are only added the first time.
 set -uo pipefail
@@ -6,8 +7,8 @@ HERE="$(cd "$(dirname "$0")" && pwd)"; export TLC_URL="${TLC_URL:-http://localho
 t() { "$HERE/tlc" "$@" 2>/dev/null; }
 tok() { python3 -c 'import json,sys;d=json.load(sys.stdin);print(d.get("token") or d.get("comment_token") or d["approvable"]["token"])'; }
 E=sentinel/proposed_changes/1234
-t --as "$ADMIN" type mk sentinel/proposed_changes --url-template 'https://sentinel.example/pc/{id}' >/dev/null
-t --as "$ADMIN" type mk sentinel/rules >/dev/null
+t --as "$ADMIN" type mk sentinel/proposed_changes --url-template 'https://sentinel.example/pc/{id}' --desc 'a change request against a fraud rule, waiting on review' >/dev/null
+t --as "$ADMIN" type mk sentinel/rules --desc 'a condition over signals that flags an account' >/dev/null
 for m in trust-infra:bob trust-infra:dave trust-risk:bob trust-risk:carol:admin trust-legal:lena; do IFS=: read -r g l a <<<"$m"; t --as "$ADMIN" group add "$g" "$l" ${a:+--admin} >/dev/null; done
 t --as "$ADMIN" rule mk --token AR-6392 --requirement MIN_GROUPS --min 2 --desc "for approving a new ATO_VELOCITY rule" --group 'ENG:trust-infra:#trust-infra-oncall' --group 'RISK:trust-risk' --group 'LEGAL:trust-legal:legal@example.com' >/dev/null
 t --as "$ADMIN" rule mk --token AR-1001 --requirement ANY_NON_SELF_APPROVAL --desc "any second pair of eyes" >/dev/null
@@ -16,7 +17,16 @@ t --as "$ADMIN" rule mk --token AR-2002 --requirement SLACK_NOTIFICATION --desc 
 if [ -z "$(t --as alice --json own log --target sentinel/rules/ATO_VELOCITY | grep OW-)" ]; then
   ago() { python3 -c "import datetime,sys;print((datetime.datetime.now(datetime.timezone.utc)-datetime.timedelta(days=int(sys.argv[1]))).strftime('%Y-%m-%dT%H:%M:%SZ'))" "$1"; }
   R=sentinel/rules; SG=sentinel/signals; HK=sentinel/hooks/freeze_account
-  t --as "$ADMIN" type mk sentinel/signals >/dev/null; t --as "$ADMIN" type mk sentinel/hooks >/dev/null
+  t --as "$ADMIN" type mk sentinel/signals --desc 'a computed input a rule reads' >/dev/null; t --as "$ADMIN" type mk sentinel/hooks --desc 'an action taken when a rule fires' >/dev/null
+  while IFS='|' read -r ref name; do t --service sentinel entity mk "sentinel/$ref" --name "$name" >/dev/null; done <<'NAMES'
+signals/velocity_24h|money-movement attempts per account, 24h
+signals/geo_mismatch|login geography differs from usual
+rules/ATO_VELOCITY|account takeover: too many attempts in 24h
+rules/VEL_2|second velocity rule
+rules/GEO_1|current geo rule
+rules/LEGACY_GEO|pre-migration geo rule
+hooks/freeze_account|freeze the flagged account
+NAMES
   for m in trust-ops:olga trust-ops:omar trust-ds:dana; do IFS=: read -r g l <<<"$m"; t --as "$ADMIN" group add "$g" "$l" >/dev/null; done
   t --as "$ADMIN" group contact trust-infra --slack '#trust-infra-oncall' >/dev/null; t --as "$ADMIN" group contact trust-ops --slack '#ops-review' >/dev/null; t --as "$ADMIN" group contact trust-ds --email ds-oncall@example.com >/dev/null
   t --as "$ADMIN" own expect $R availability --desc "the rule is deployed, evaluates on every eligible event in prod, and returns inside its latency budget" >/dev/null

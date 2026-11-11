@@ -1,5 +1,7 @@
 # Ownership
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
+
 "Who owns rule R?" has no single answer here: ENG owns that it *evaluates* in prod, OPS owns that
 what it flags gets *reviewed*, DS owns that it still *catches* what it should. So ownership is
 recorded per **aspect** of a record, not per record.
@@ -10,7 +12,7 @@ ownership = (target, aspect, owner, role, effective interval)      owner = a dir
 
 | | |
 |---|---|
-| **aspect** | open vocabulary, like tag names: `availability`, `disposition`, `efficacy`, … |
+| **aspect** | open vocabulary, like tag names: [`availability`](example-world.md#availability), [`disposition`](example-world.md#disposition), [`efficacy`](example-world.md#efficacy), … |
 | **role** | `OWNER` — accountable; asked to consent when an approval rule names the aspect. `STAKEHOLDER` — told, never asked; any number. |
 | **target** | `service/entity/id`, or `service/entity/*` for a type-wide default |
 | **the invariant** | at most one `OWNER` per (record, aspect) at any instant |
@@ -106,9 +108,9 @@ all touch the same rule and need different people:
 | action (one rule each) | `availability` | `disposition` | `efficacy` |
 |---|---|---|---|
 | detach hook (shadow mode) | notify | **consent** | notify |
-| disable a rule (`AR-3004`) | **consent** | **consent** | notify |
+| disable a rule ([`AR-3004`](example-world.md#AR-3004)) | **consent** | **consent** | notify |
 | change a threshold | notify | notify | **consent** |
-| pin a signal to last-known-good (`AR-3003`) | – | **consent**, downstream | notify, downstream |
+| pin a signal to last-known-good ([`AR-3003`](example-world.md#AR-3003)) | – | **consent**, downstream | notify, downstream |
 
 So the two halves are kept apart and only meet when a request is filed:
 
@@ -119,7 +121,7 @@ approvable = (target, rule):   resolve aspect -> group on that target, freeze th
 ```
 
 - **A rule is never attached to an entity or an entity type.** There is no "the approvers for
-  `sentinel/rules/ATO_VELOCITY`"; there is only "the approvers for *disabling* `ATO_VELOCITY`", computed from
+  [`sentinel/rules/ATO_VELOCITY`](example-world.md#ATO_VELOCITY)"; there is only "the approvers for *disabling* [`ATO_VELOCITY`](example-world.md#ATO_VELOCITY)", computed from
   `AR-3004` and whoever owns its aspects at filing time.
 - **One rule covers every record it is filed against.** `AR-3004` asks trust-infra for one rule and a
   different team for another, without either team appearing in the rule.

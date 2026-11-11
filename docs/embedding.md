@@ -1,5 +1,7 @@
 # Embedding (the iframe) and the bundled UIs
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
+
 ## `/iframe`
 
 ```html

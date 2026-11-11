@@ -1,5 +1,7 @@
 # Data model
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
+
 23 migrations (one statement each), 22 tables, in `src/main/resources/migrations/`. MySQL 8+/9
 (CHECK constraints and stored generated columns are relied on).
 
@@ -16,7 +18,7 @@
 All times are epoch milliseconds in the database and ISO-8601 UTC on the wire (inputs accept either).
 
 Token prefixes: `ET-` type · `E-` entity · `U-` tlcer · `TG-` tag · `TGG-` tagging · `T-` thread ·
-`C-` comment · `L-` like · `AR-` rule (`AR-6392`: 4 digits when generated, or caller-chosen) ·
+`C-` comment · `L-` like · `AR-` rule ([`AR-6392`](example-world.md#AR-6392): 4 digits when generated, or caller-chosen) ·
 `AP-` approvable · `A-` approval · `N-` notification · `OW-` ownership claim · `EG-` edge.
 
 ## Tables

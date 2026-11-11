@@ -1,5 +1,7 @@
 # Approvals
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
+
 ```
                   approve (requirement met)            execute (claim)
    ┌─────────┐ ─────────────────────────────▶ ┌──────────┐ ───────────────▶ ┌──────────┐
@@ -11,8 +13,8 @@
 
 | piece | is |
 |---|---|
-| **approval rule** (`AR-6392`) | what is required: a `requirement` + the groups that count |
-| **rule group** | a label in the rule (`ENG`) → a directory group (`trust-infra`), `admins_only?`, `slack_channel?`, `email?` |
+| **approval rule** ([`AR-6392`](example-world.md#AR-6392)) | what is required: a `requirement` + the groups that count |
+| **rule group** | a label in the rule ([`ENG`](example-world.md#trust-infra)) → a directory group ([`trust-infra`](example-world.md#trust-infra)), `admins_only?`, `slack_channel?`, `email?` |
 | **approvable** (`AP-…`) | one thing awaiting approval: an external record + rule + `approval_context` + who asked |
 | **approval** | one person's approval of one approvable, with `unapproved_at` when withdrawn |
 

@@ -1,10 +1,12 @@
 # Entities
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
+
 TLC attaches things to records it doesn't own. It models just enough to point at them.
 
 | table | is | example |
 |---|---|---|
-| `external_entity_types` | a *table* in some service that TLC has been told about | `sentinel` / `proposed_changes` |
+| `external_entity_types` | a *table* in some service that TLC has been told about | [`sentinel`](example-world.md#sentinel) / `proposed_changes` |
 | `external_entities` | a *row* of such a table | type ↑ + `source_entity_id = "1234"` |
 | `tlcers` | a person who has acted through TLC | `alice` |
 
@@ -27,7 +29,7 @@ Tags and threads attach to any target. Logs and approvables attach to external r
   `sentinel/propsed_changes/1` silently mints a second "table" and its tags are never found again.
   Flip `tlc.auto_register_entity_types` to get the permissive behaviour.
 - **Records are vivified.** TLC can't pre-know every row of someone else's table, so the first
-  *write* that mentions `sentinel/proposed_changes/1234` creates the record. *Reads* never create:
+  *write* that mentions [`sentinel/proposed_changes/1234`](example-world.md#sentinel-proposed_changes) creates the record. *Reads* never create:
   `is-tagged` on a never-seen record is `false`, `GET /api/entities/get` is a 404, untag is a no-op.
 - **Destroy is soft** (`deleted_at`). History hung on the record stays readable. A later write
   revives it — the source service evidently still has the row. Destroying a *type* (admin) blocks

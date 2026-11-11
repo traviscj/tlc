@@ -1,7 +1,9 @@
 # Logs
 
+> Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
+
 Append-only entries: `timestamp, level, message, source` plus an optional scope — an entity
-**type** (`sentinel/proposed_changes`), one **record** (`sentinel/proposed_changes/1234`, which
+**type** ([`sentinel/proposed_changes`](example-world.md#sentinel-proposed_changes)), one **record** ([`sentinel/proposed_changes/1234`](example-world.md#sentinel-proposed_changes), which
 implies its type), or nothing.
 
 ```sh
