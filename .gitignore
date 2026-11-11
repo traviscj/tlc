@@ -1,0 +1,6 @@
+build
+.gradle
+.kotlin
+.idea
+tlc-local.yaml
+.tlc-cursor*

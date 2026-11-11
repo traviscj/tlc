@@ -1,0 +1,114 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>TLC console</title>
+<link rel="stylesheet" href="/static/tlc.css">
+<style>
+#top{display:flex;gap:10px;align-items:center;border-bottom:1px solid var(--line);padding-bottom:3px;flex-wrap:wrap}
+#top b{color:var(--info);letter-spacing:.1em}#counts span{margin-right:8px}
+#grid{display:grid;grid-template-columns:minmax(230px,24fr) minmax(380px,46fr) minmax(300px,30fr);gap:0 10px;align-items:start}
+@media(max-width:1100px){#grid{grid-template-columns:1fr 1fr}}@media(max-width:700px){#grid{grid-template-columns:1fr}}
+#grid>div{min-width:0;overflow-x:auto}
+</style></head>
+<body>
+<div id="top"><b>TLC</b><span class="dim">tags · logs · comments · approvals · ownership · entities</span>
+  <span>as <input id="as" size="10" placeholder="ldap"></span><span id="me" class="dim"></span>
+  <span id="counts"></span><span style="flex:1"></span><span id="tick" class="dim"></span>
+  <a href="/demo">embed demo</a></div>
+<div id="err" class="err"></div>
+<div id="grid">
+  <div id="c1"></div>
+  <div><h2>target <small>service/entity/id · E- · T- · C- · AP-</small></h2>
+    <form class="row" id="tf"><input class="g" id="t" placeholder="sentinel/proposed_changes/1234"><button>open</button></form><div id="panel"></div></div>
+  <div id="c3"></div>
+</div>
+<script src="/static/tlc.js"></script>
+<script>
+const {api, q, esc, ts, age, table} = TLC, $ = id => document.getElementById(id);
+const hash = () => new URLSearchParams(location.hash.slice(1));
+const panel = TLC.panel($('panel'), {target: hash().get('target') || '', onchange: () => tick()});
+let D = null, lastOk = 0;
+
+function go(target) { location.hash = 'target=' + encodeURIComponent(target); }
+addEventListener('hashchange', async () => {
+  const h = hash();
+  if (h.get('approvable')) { try { const v = await api('GET', '/api/approvables/' + h.get('approvable')); return go(v.approvable.target); } catch (e) { showErr(e); } }
+  const t = h.get('target') || ''; $('t').value = t; panel.setTarget(t); draw();
+});
+$('tf').onsubmit = e => { e.preventDefault(); go($('t').value.trim()); $('t').blur(); };
+$('as').value = TLC.user;
+$('as').onchange = () => { TLC.setUser($('as').value); $('as').blur(); tick(); panel.refresh(); };
+const showErr = e => { $('err').textContent = e ? String(e.message || e) : ''; };
+
+async function load() {
+  const [info, me, types, ents, tags, aps, mine, rules, reg, notes, feeds, logs, tlcers] = await Promise.all([
+    api('GET', '/api/info'), api('GET', '/api/me'), api('GET', '/api/entity-types'), api('GET', '/api/entities?limit=40'), api('GET', '/api/tags?include_ineffective=true'),
+    api('GET', '/api/approvables?limit=30'), TLC.user ? api('GET', '/api/approvables?awaiting=me&limit=30').catch(() => ({approvables: []})) : {approvables: []},
+    api('GET', '/api/approval-rules'), api('GET', '/api/directory'), api('GET', '/api/notifications?limit=12'), api('GET', '/_feeds/status'), api('GET', '/api/logs?limit=25'), api('GET', '/api/tlcers'),
+  ]);
+  const [cov, gaps] = await Promise.all([api('GET', '/api/ownership/coverage'), api('GET', '/api/ownership/gaps?limit=14')]);
+  D = {info, me, types: types.entity_types, ents: ents.entities, tags: tags.tags, aps: aps.approvables, mine: new Set(mine.approvables.map(a => a.token)), rules: rules.rules, reg: reg.memberships, notes: notes.notifications, feeds: feeds.feeds, logs: logs.entries, tlcers: tlcers.tlcers, cov, gaps: gaps.cells};
+}
+
+function draw() {
+  if (!D) return;
+  const a = document.activeElement;
+  if (a && a.closest('#c1,#c3') && a.tagName === 'INPUT' && a.value) return; // someone is mid-form
+  const cur = panel.target, c = D.info.counts;
+  $('me').innerHTML = D.me.ldap ? `${D.me.admin ? '<span class=warn>admin</span> ' : ''}${esc(D.me.directory_groups.join(',') || 'no groups')}` : '';
+  $('counts').innerHTML = [['types', c.external_entity_types], ['entities', c.external_entities], ['tags', c.tags], ['taggings', c.taggings], ['logs', c.log_entries], ['threads', c.threads], ['comments', c.comments], ['likes', c.likes], ['rules', c.approval_rules], ['approvables', c.approvables], ['approvals', c.approvals], ['tlcers', c.tlcers]].map(([k, v]) => `<span><span class=dim>${k}</span> ${v}</span>`).join('');
+  const adm = D.me.admin;
+  $('c1').innerHTML =
+    `<h2>entity types <small>${D.types.length}</small></h2>` + table([['service/entity', r => `<span class=b>${esc(r.source_service)}/${esc(r.source_entity)}</span>`], ['n', r => r.entities, 'n'], ['token', r => `<span class=dim>${esc(r.token)}</span>`]], D.types) +
+    `<form class=row data-form=type><input class=g name=type placeholder="service/entity"><button>register</button></form>` +
+    `<h2>entities <small>newest ${D.ents.length}</small></h2>` + table([['ref', r => `${esc(r.source_entity)}/<span class=b>${esc(r.source_entity_id)}</span>`], ['name', r => esc(r.display_name || '')], ['age', r => age(r.created_at), 'n']], D.ents, {go: r => r.ref, cls: r => r.ref === cur ? 'sel' : ''}) +
+    `<h2>tags <small>${D.tags.length}</small></h2>` + table([['tag', r => `<span class="${r.ineffective_at ? 'dim' : 'b'}">${esc(r.tag_name)}</span>`], ['now', r => r.tagged_now, 'n'], ['by', r => esc(r.created_by)], ['effective', r => ts(r.effective_at)], ['retired', r => r.ineffective_at ? `<span class=bad>${ts(r.ineffective_at)}</span>` : '']], D.tags) +
+    `<h2>tlcers <small>${D.tlcers.length}</small></h2>` + table([['ldap', r => esc(r.ldap)], ['seen', r => ts(r.last_seen_at)], ['age', r => age(r.last_seen_at), 'n']], D.tlcers.slice(0, 12)) +
+    `<h2>directory <small>local stand-in${adm ? '' : ' · admin to edit'}</small></h2>` + table([['group', r => esc(r.directory_group)], ['ldap', r => esc(r.ldap)], ['', r => r.is_admin ? '<span class=warn>admin</span>' : ''], ['', r => adm ? `<a href=# data-act=unmember data-g="${esc(r.directory_group)}" data-l="${esc(r.ldap)}">×</a>` : '']], D.reg) +
+    (adm ? `<form class=row data-form=member><input name=group placeholder=group size=9><input class=g name=ldap placeholder=ldap><label><input type=checkbox name=admin style="height:auto">adm</label><button>add</button></form>` : '');
+  const T = D.cov.total, z = (n, cls) => n ? `<span class=${cls}>${n}</span>` : '<span class=dim>0</span>', pc = r => `<span class="${r.pct_owned >= 90 ? 'ok' : r.pct_owned >= 60 ? 'warn' : 'bad'} b">${r.pct_owned.toFixed(1)}</span>`;
+  const own = h => esc(h.owner) + (h.source === 'TYPE' ? '~' : '') + (h.lapsed ? `(${h.age_days}d)` : '');
+  $('c3').innerHTML =
+    `<h2>ownership coverage <small>${T.owned}/${T.cells} cells with exactly one live owner · ${pc(T)}% · lapse ${D.cov.lapse_days}d</small></h2>` + table([['type', r => `<span title="${esc(r.entity_type)}">${esc(r.entity_type.split('/')[1])}</span>`], ['aspect', r => `<span class=b>${esc(r.aspect)}</span>`], ['n', r => r.cells, 'n'], ['owned', r => z(r.owned, 'ok'), 'n'], ['laps', r => z(r.lapsed, 'warn'), 'n'], ['cont', r => z(r.contested, 'bad'), 'n'], ['unown', r => z(r.unowned, 'UNOWNED'), 'n'], ['dir', r => r.direct, 'n'], ['inh', r => r.inherited, 'n'], ['%', pc, 'n']], D.cov.rows, {empty: 'no aspects expected yet: tlc own expect service/entity ASPECT'}) +
+    (D.cov.owners.length ? table([['owner', r => `<span class=b>${esc(r.owner)}</span>`], ['owned', r => z(r.owned, 'ok'), 'n'], ['laps', r => z(r.lapsed, 'warn'), 'n'], ['cont', r => z(r.contested, 'bad'), 'n'], ['stakeholder', r => r.stakeholder, 'n']], D.cov.owners) : '') +
+    `<h2>ownership gaps <small>not cleanly owned, first ${D.gaps.length}</small></h2>` + table([['record', r => esc(r.target.split('/').slice(1).join('/'))], ['aspect', r => esc(r.aspect)], ['status', r => `<span class=${r.status}>${r.status}</span>`], ['claimants', r => r.owners.map(own).join(' ')]], D.gaps, {go: r => r.target, cls: r => r.target === cur ? 'sel' : '', empty: 'every expected cell has exactly one live owner'}) +
+    `<h2>approvables <small>newest ${D.aps.length} · <span class=warn>▸</span> = waiting on you (${D.mine.size})</small></h2>` + table([['', r => D.mine.has(r.token) ? '<span class=warn>▸</span>' : ''], ['state', r => `<span class="${r.approval_state} b">${r.approval_state}</span>`], ['target', r => esc(r.target.split('/').slice(1).join('/'))], ['rule', r => esc(r.approval_rule_token)], ['by', r => esc(r.requested_by)], ['age', r => age(r.created_at), 'n']], D.aps, {go: r => r.target, cls: r => r.target === cur ? 'sel' : ''}) +
+    `<h2>approval rules <small>${D.rules.length}</small></h2>` + table([['token', r => `<span class=b>${esc(r.token)}</span>`], ['requirement', r => esc(r.requirement) + (r.min_groups ? `≥${r.min_groups}` : '')], ['groups', r => r.groups.map(g => `<span title="${esc(g.directory_group)}${g.admins_only ? ' admins' : ''} ${esc(g.slack_channel || '')} ${esc(g.email || '')}">${esc(g.group)}${g.admins_only ? '!' : ''}</span>`).join(' ') + (r.aspects || []).map(x => `<span class="${x.mode === 'CONSENT' ? 'info' : 'dim'}" title="${x.mode}: owner of ${esc(x.aspect)}${x.scope === 'DOWNSTREAM' ? ' incl. downstream' : ''}${x.fallback_group ? ' (else ' + esc(x.fallback_group) + ')' : ''}${x.threshold != null ? ' · only when declared impact > ' + (+x.threshold) + ' ' + esc(x.unit || '') : ''}">${x.mode === 'CONSENT' ? 'ask' : 'tell'}:${esc(x.aspect)}${x.scope === 'DOWNSTREAM' ? '↓' : ''}${x.threshold != null ? '&gt;' + (+x.threshold) : ''}</span>`).join(' ')], ['for', r => (r.applies_to || []).map(t => `<span title="only filed against ${esc(t)}">${esc(t.split('/')[1])}</span>`).join(' ') || '<span class=dim>any</span>'], ['open', r => r.open_approvables || '', 'n'], ['description', r => `<span class=dim title="${esc(r.description)}">${esc(r.description.slice(0, 28))}</span>`]], D.rules) +
+    (adm ? `<form class=row data-form=rule><input name=token placeholder="AR-…" size=7><select name=requirement>${D.info.requirements.map(r => `<option title="${esc(r.description)}">${r.name}</option>`).join('')}</select><input name=min placeholder=min size=2><input class=g name=description placeholder=description></form><form class=row data-form=rule2><input class=g name=groups placeholder="groups: ENG:trust-infra:#chan, RISK:trust-risk:admins"><button>create rule</button></form>` : '') +
+    `<h2>notifications <small>outbox, newest ${D.notes.length}</small></h2>` + table([['time', r => ts(r.created_at)], ['st', r => `<span class="${r.status === 'FAILED' ? 'bad' : r.status === 'PENDING' ? 'warn' : 'ok'}">${r.status}</span>`], ['ch', r => r.channel], ['to', r => esc(r.destination)], ['event', r => r.event], ['body', r => `<span class=dim title="${esc(r.body)}">${esc(r.body.slice(6, 70))}</span>`]], D.notes) +
+    `<h2>feeds</h2>` + table([['feed', r => `<a href="/_feeds/fetch/${r.feed}" onclick="return false">${r.feed}</a>`], ['seq', r => r.sequence, 'n'], ['rows', r => r.rows, 'n'], ['pending', r => `<span class="${r.pending ? 'warn' : 'dim'}">${r.pending}</span>`, 'n'], ['', r => r.publishing_enabled ? '<span class=ok>on</span>' : '<span class=bad>paused</span>']], D.feeds) +
+    `<h2>log tail <small>all targets, newest ${D.logs.length}</small></h2>` + table([['time', r => ts(r.timestamp)], ['lvl', r => `<span class=${r.level}>${r.level}</span>`], ['source', r => `<span class=dim>${esc(r.source)}</span>`], ['target', r => esc((r.target || r.entity_type || '').split('/').slice(1).join('/'))], ['message', r => `<span class=${r.level} title="${esc(r.message)}">${esc(r.message.slice(0, 80))}</span>`]], D.logs, {go: r => r.target || '', cls: r => r.target && r.target === cur ? 'sel' : ''});
+}
+
+document.addEventListener('click', ev => {
+  if (ev.target.closest('#panel')) return;
+  const un = ev.target.closest('[data-act=unmember]');
+  if (un) { ev.preventDefault(); return void api('DELETE', `/api/directory/${un.dataset.g}/members/${un.dataset.l}`).then(tick, showErr); }
+  const tr = ev.target.closest('tr[data-go]');
+  if (tr && tr.dataset.go) go(tr.dataset.go);
+});
+document.addEventListener('submit', async ev => {
+  const f = ev.target; if (f.closest('#panel') || !f.dataset.form) return;
+  ev.preventDefault();
+  const v = Object.fromEntries(new FormData(f));
+  try {
+    if (f.dataset.form === 'type') { const [s, e] = v.type.split('/'); await api('POST', '/api/entity-types', {source_service: s, source_entity: e}); }
+    if (f.dataset.form === 'member') await api('PUT', `/api/directory/${encodeURIComponent(v.group)}/members/${encodeURIComponent(v.ldap)}?admin=${!!v.admin}`);
+    if (f.dataset.form === 'rule' || f.dataset.form === 'rule2') {
+      const a = Object.fromEntries(new FormData(document.querySelector('form[data-form=rule]'))), b = Object.fromEntries(new FormData(document.querySelector('form[data-form=rule2]')));
+      const groups = b.groups.split(',').map(s => s.trim()).filter(Boolean).map(s => { const [group, directory_group, ...x] = s.split(':'); return {group, directory_group, admins_only: x.includes('admins'), slack_channel: x.find(y => y.startsWith('#')), email: x.find(y => y.includes('@'))}; });
+      await api('POST', '/api/approval-rules', {token: a.token || undefined, requirement: a.requirement, min_groups: a.min ? +a.min : undefined, description: a.description, groups});
+    }
+    showErr(''); document.querySelectorAll('#c1 input,#c3 input').forEach(i => { i.value = ''; i.blur(); });
+  } catch (e) { showErr(e); }
+  tick();
+});
+
+const tick = TLC.poll(async () => {
+  try { await Promise.all([load(), panel.refresh()]); lastOk = Date.now(); showErr($('err').textContent.startsWith('poll:') ? '' : $('err').textContent); document.body.classList.remove('stale'); }
+  catch (e) { showErr('poll: ' + (e.message || e)); document.body.classList.add('stale'); }
+  draw();
+  const d = new Date(); $('tick').textContent = `${String(d.getHours()).padStart(2, '0')}:${String(d.getMinutes()).padStart(2, '0')}:${String(d.getSeconds()).padStart(2, '0')}${lastOk && Date.now() - lastOk > 15000 ? ' STALE' : ''}`;
+}, 5000);
+$('t').value = panel.target;
+if (!TLC.user) showErr('set "as" to an ldap to begin (trusted-header auth; see docs/operations.md)');
+</script>
+</body></html>

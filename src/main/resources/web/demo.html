@@ -1,0 +1,44 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>sentinel · proposed change (TLC embed demo)</title>
+<style>
+body{font:13px/1.35 -apple-system,Helvetica,Arial,sans-serif;margin:0;background:#f4f5f7;color:#1c2024}
+header{background:#1f2a44;color:#fff;padding:6px 12px;display:flex;gap:12px;align-items:center}
+header b{letter-spacing:.04em}header input{font:inherit;width:9em}
+main{display:grid;grid-template-columns:minmax(280px,1fr) minmax(420px,1.4fr);gap:8px;padding:8px}
+@media(max-width:800px){main{grid-template-columns:1fr}}
+section{background:#fff;border:1px solid #d8dbe0;padding:8px}
+h1{font-size:15px;margin:0 0 4px}pre{background:#f6f8fa;padding:6px;margin:4px 0;overflow:auto;font-size:12px}
+.del{color:#cf222e}.add{color:#1a7f37}small{color:#667}
+iframe{width:100%;border:0;display:block;min-height:300px}code{background:#eef;padding:0 3px}
+</style></head>
+<body>
+<header><b>sentinel</b><span>proposed_changes /</span><input id="id" value="1234"><span>viewing as</span><input id="as" value="bob"><button id="go">load</button><small style="color:#aab">this page is a stand-in for a source service; everything on the right is TLC in an iframe</small></header>
+<main>
+<section>
+  <h1>Proposed change #<span id="n">1234</span>: raise ATO_VELOCITY velocity limit</h1>
+  <small>owned by sentinel · TLC only knows the triple <code>sentinel/proposed_changes/<span id="n2">1234</span></code></small>
+<pre>rule ATO_VELOCITY.velocity_24h
+<span class="del">-  threshold: 12</span>
+<span class="add">+  threshold: 20</span>
+   action: HOLD</pre>
+  <p>sentinel's own page has no tags, comments, approvals or audit log tables. It embeds:</p>
+<pre id="snippet"></pre>
+  <p>and listens for <code>{type:'tlc:height'}</code> messages to size the frame. To apply the change it tails
+  <code>/_feeds/fetch/approvables</code> and, on <b>APPROVED</b>, claims it with <code>POST /api/approvables/{token}/execute</code>
+  (see <code>scripts/demos/06-feeds.sh</code>).</p>
+  <p><small>Empty? Run <code>scripts/seed.sh</code>. Try viewing as <code>alice</code> (requester), <code>bob</code>/<code>dave</code> (trust-infra), <code>carol</code> (trust-risk).</small></p>
+</section>
+<section style="padding:0"><iframe id="f" title="TLC"></iframe></section>
+</main>
+<script>
+const $ = id => document.getElementById(id), f = $('f');
+function load() {
+  const id = $('id').value.trim(), as = $('as').value.trim();
+  const src = `/iframe?target=${encodeURIComponent('sentinel/proposed_changes/' + id)}&user=${encodeURIComponent(as)}`;
+  f.src = src; $('n').textContent = $('n2').textContent = id;
+  $('snippet').textContent = `<iframe src="${location.origin}${src.replace(/&user=.*/, '')}"></iframe>`;
+}
+addEventListener('message', e => { if (e.source === f.contentWindow && e.data && e.data.type === 'tlc:height') f.style.height = Math.max(300, e.data.height + 8) + 'px'; });
+$('go').onclick = load; load();
+</script>
+</body></html>

@@ -1,0 +1,33 @@
+:root{--bg:#0b0e11;--bg2:#12161b;--line:#222a33;--fg:#d7dde3;--dim:#6b7580;--ok:#3fb950;--warn:#d29922;--bad:#f85149;--info:#58a6ff;--acc:#bc8cff;--mono:ui-monospace,SFMono-Regular,Menlo,monospace}
+@media (prefers-color-scheme: light){:root:not([data-theme=dark]){--bg:#fbfbf9;--bg2:#f0f0ec;--line:#d5d5cf;--fg:#1c2024;--dim:#7a8088;--ok:#1a7f37;--warn:#9a6700;--bad:#cf222e;--info:#0969da;--acc:#8250df}}
+*{box-sizing:border-box}
+body{background:var(--bg);color:var(--fg);font:12px/1.25 var(--mono);margin:0;padding:4px 8px}
+table{border-collapse:collapse;width:100%}
+th,td{padding:1px 6px;white-space:nowrap;text-align:left;vertical-align:top;overflow:hidden;text-overflow:ellipsis;max-width:38ch}
+th{color:var(--dim);font-weight:400;border-bottom:1px solid var(--line)}
+td.n,th.n{text-align:right;font-variant-numeric:tabular-nums}
+td.w{white-space:normal;max-width:none;word-break:break-word}
+tbody tr:nth-child(even){background:#7f7f7f10}
+tr.sel{outline:1px solid var(--info)}
+tr[data-go]{cursor:pointer}tr[data-go]:hover{background:#7f7f7f28}
+.ok{color:var(--ok)}.warn{color:var(--warn)}.bad{color:var(--bad);font-weight:700}.dim{color:var(--dim)}.info{color:var(--info)}.acc{color:var(--acc)}.b{font-weight:700}
+h2{font-size:12px;margin:6px 0 1px;padding:1px 6px;background:var(--bg2);border-left:2px solid var(--info);font-weight:700;letter-spacing:.06em;text-transform:uppercase;display:flex;gap:8px;align-items:baseline}
+h2 small{font-weight:400;color:var(--dim);text-transform:none;letter-spacing:0}
+input,select,textarea,button{font:inherit;color:inherit;background:var(--bg2);border:1px solid var(--line);padding:0 4px;border-radius:0;height:18px}
+textarea{height:34px;width:100%;resize:vertical}
+button{cursor:pointer;color:var(--info)}button:hover{border-color:var(--info)}
+button.go{color:var(--ok)}button.no{color:var(--bad)}
+a{color:var(--info);text-decoration:none}a:hover{text-decoration:underline}
+form.row,div.row{display:flex;gap:4px;margin:2px 0;align-items:center}form.row input.g,div.row input.g{flex:1;min-width:0}
+.chip{display:inline-block;border:1px solid var(--line);padding:0 4px;margin:0 2px 1px 0}
+.cm{border-left:1px solid var(--line);padding:1px 0 1px 6px;margin:1px 0}
+.cm .hd{color:var(--dim)}.cm .tx{white-space:pre-wrap;word-break:break-word}
+.err{color:var(--bad);white-space:pre-wrap;min-height:0}
+.stale{opacity:.55}
+.PENDING{color:var(--warn)}.APPROVED{color:var(--ok)}.EXECUTED{color:var(--info)}.DECLINED{color:var(--bad)}
+.ACTED{color:var(--bad);font-weight:700}.RATIFIED{color:var(--ok)}.REVERTED{color:var(--acc)}
+.OWNED{color:var(--ok)}.CONTESTED{color:var(--bad);font-weight:700}.UNOWNED{color:var(--warn);font-weight:700}.LAPSED{color:var(--warn)}
+.CLAIM{color:var(--ok)}.RELEASE{color:var(--bad)}.AFFIRM{color:var(--dim)}
+pre.tree{margin:1px 0;font:inherit;white-space:pre;overflow-x:auto}
+.TRACE,.DEBUG{color:var(--dim)}.INFO{color:var(--fg)}.WARN{color:var(--warn)}.ERROR,.FATAL{color:var(--bad);font-weight:700}
+.ADD{color:var(--ok)}.REMOVE{color:var(--bad)}

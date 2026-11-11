@@ -1,0 +1,1 @@
+ALTER TABLE approval_rule_aspects ADD COLUMN threshold DOUBLE NULL, ADD COLUMN unit VARCHAR(48) NULL

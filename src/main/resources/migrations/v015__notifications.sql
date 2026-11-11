@@ -1,0 +1,20 @@
+CREATE TABLE notifications (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  token VARCHAR(32) NOT NULL,
+  channel VARCHAR(16) NOT NULL,
+  destination VARCHAR(255) NOT NULL,
+  event VARCHAR(32) NOT NULL,
+  approvable_token VARCHAR(32) NULL,
+  body TEXT NOT NULL,
+  status VARCHAR(16) NOT NULL DEFAULT 'PENDING',
+  detail VARCHAR(512) NULL,
+  attempts INT NOT NULL DEFAULT 0,
+  sent_at_ms BIGINT NULL,
+  PRIMARY KEY (id),
+  UNIQUE KEY u_token (token),
+  KEY k_status (status, id),
+  KEY k_approvable (approvable_token, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4

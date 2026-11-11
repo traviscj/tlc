@@ -1,0 +1,22 @@
+CREATE TABLE threads (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  token VARCHAR(32) NOT NULL,
+  title VARCHAR(255) NOT NULL,
+  body TEXT NULL,
+  creator VARCHAR(96) NOT NULL,
+  subject_token VARCHAR(32) NULL,
+  external_entity_id BIGINT NULL,
+  target_key VARCHAR(40) NULL,
+  cached_comments INT NOT NULL DEFAULT 0,
+  last_comment_at_ms BIGINT NULL,
+  deleted_at_ms BIGINT NULL,
+  feed_sync_id BIGINT NULL,
+  shard INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY u_token (token),
+  UNIQUE KEY u_fsi (feed_sync_id),
+  KEY k_target (target_key, id)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4

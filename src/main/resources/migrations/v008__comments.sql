@@ -1,0 +1,23 @@
+CREATE TABLE comments (
+  id BIGINT NOT NULL AUTO_INCREMENT,
+  created_at_ms BIGINT NOT NULL,
+  updated_at_ms BIGINT NOT NULL,
+  version INT NOT NULL DEFAULT 1,
+  comment_token VARCHAR(32) NOT NULL,
+  thread_id BIGINT NOT NULL,
+  parent_comment_id BIGINT NULL,
+  thread_path VARCHAR(255) NOT NULL DEFAULT '',
+  depth INT NOT NULL DEFAULT 0,
+  content TEXT NOT NULL,
+  author VARCHAR(96) NOT NULL,
+  commented_at_ms BIGINT NOT NULL,
+  edited_at_ms BIGINT NULL,
+  deleted_at_ms BIGINT NULL,
+  cached_likes INT NOT NULL DEFAULT 0,
+  feed_sync_id BIGINT NULL,
+  shard INT NOT NULL DEFAULT 0,
+  PRIMARY KEY (id),
+  UNIQUE KEY u_token (comment_token),
+  UNIQUE KEY u_fsi (feed_sync_id),
+  KEY k_thread_path (thread_id, thread_path)
+) ENGINE=InnoDB DEFAULT CHARSET=utf8mb4

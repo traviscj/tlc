@@ -1,0 +1,122 @@
+# How the note was read
+
+The spec was a page of bullets. Where it was silent or ambiguous, this is what was chosen and why.
+Each is cheap to revisit; the ones marked ⚑ are the ones most worth a second opinion.
+
+## Vocabulary
+
+| note | read as |
+|---|---|
+| `icuvt` / `icuv` | id, created_at, updated_at, version (+ token) |
+| `effectivity` / `effectivicity` | effective-dating: when it is true, as distinct from when it was recorded |
+| `feed`, `Fsi, shard` | feedz-style change feed: `feed_sync_id` + `shard` on the row |
+| `External_entity_type_id`, `source_entity_id` | `(type) + the owning service's own primary key`, as a string |
+
+## Entities
+
+- **"Entities (not sure where I was going with this)" + CRUD** → the CRUD applies to the two
+  `external_*` tables. There is no third, TLC-native "entity" concept.
+- ⚑ **Types are registered, records are vivified on first write.** Requiring services to pre-register
+  every row would make TLC useless; letting them mint *types* by typo would rot it.
+- **Destroy is soft** everywhere. A tag service that forgets history on delete can't answer "was tagged".
+
+## Tags
+
+- **"taggable_id ..OR!.. External_entity_id"** → a tagging targets either a TLC-internal object
+  (`taggable_id` holds its token: thread, comment, approvable) or an external record. Enforced by CHECK.
+- ⚑ **Taggings are an operation log, not a mutable join table.** `Operation: ADD | REMOVE` plus
+  effectivity only makes sense that way, and it is what makes "was tagged" exact rather than
+  best-effort. Cost: state is folded at read time (see `docs/tags.md`, Cost model).
+- **"effectivity" on taggings is a single `effective_at`**; an interval's end is the matching REMOVE.
+  On *tags* it is a window (`effective_at`..`ineffective_at`): retiring a tag stops new use without
+  erasing old use.
+- **`known_at`** was not in the note. With backdating allowed, "what did we believe at the time" is
+  a different question from "what was true at the time", and the append-only log answers both for
+  one extra predicate.
+- **`ldap` and `Service`** stay two columns: who, and through what.
+
+## Logs
+
+- Taken literally: six columns. Entries can be about a record, a type, or nothing.
+- TLC also logs its own tag/comment/approval events here (`source` = `tlc.*`) — it gives approvals
+  an audit trail for free and makes the L useful to the T, C and A.
+- ⚑ Logs attach only to **external** records (the note's columns), not to threads/approvables.
+
+## Comments
+
+- **`Cached_comments`** → a maintained count (+ `last_comment_at`), not a cached blob of rendered comments.
+- **`thread_id - easily allow`** (truncated in the note) → assumed "…easily allow fetching a whole
+  thread": comments carry `thread_id` directly and `thread_path` orders the tree.
+- **`thread_path`** → materialized path of zero-padded ids. Chosen over nested sets (cheap appends)
+  and over recursive CTEs (one index range scan to render).
+- **likes with `unliked_at`** → one row per like *episode*, so unlike→like keeps history.
+- **"Standard: nouns thread | comment; verbs create/read/update/destroy; verbs mk/ls/edit/rm"** →
+  one REST surface; both verb vocabularies are aliases in the CLI (`tlc comment mk` ≡ `tlc comment create`).
+- **"iframe"** → `/iframe?target=…`, which grew to show tags, approvals and logs for the target too
+  (`panels=comments` restores the narrow reading).
+- rm of a comment tombstones (erases content, keeps the row) so the tree doesn't lose its middle.
+
+## Approvals
+
+- **States** `INITIAL / PENDING, APPROVED, EXECUTED, DECLINED` → `INITIAL` and `PENDING` are one state.
+- ⚑ **APPROVED is not sticky** until EXECUTED: withdrawing an approval can reopen it. The alternative
+  (approval is a one-way door) makes "oops, wrong PR" unfixable short of declining.
+- **`requested_by`** was missing from the note's approvable; "any non-self approval" is undefined without it.
+- ⚑ **"Approval from ≥2 groups" needs distinct people**, decided by maximum matching. The note
+  doesn't say; the lenient reading lets one person in two groups approve alone.
+- ⚑ **Self-approval never counts toward group requirements** and is refused outright (403) rather
+  than silently ignored. Only `ANY_APPROVAL` admits it — otherwise it wouldn't differ from
+  `ANY_NON_SELF_APPROVAL`.
+- **"≥2 groups"** generalized to `MIN_GROUPS` with `min_groups` (default 2).
+- ⚑ **Group membership is snapshotted on the approval** (`via_groups`), not re-read at evaluation.
+- **"alternatives to approval: Slack notification, email notification"** (two bullets were blank)
+  → requirement types that approve immediately after queueing the notification.
+- **"Admins only? (True)"** → only *admins of* the directory group count for that rule group.
+- **"slack notification channel"** → also notified for ordinary approval rules (requested / approved /
+  declined / executed), not just notify-only ones. An `email` column sits beside it.
+- **EXECUTED** is set by an explicit, exactly-once *claim* from the requesting side; TLC never
+  executes anything itself.
+- ⚑ **Rules are not versioned.** An approvable follows its rule by token; changing a rule's
+  requirement under open approvables is refused unless forced. Snapshotting the rule onto each
+  approvable is the stricter alternative.
+- **"Directory group"** → looked up in a local stand-in table; the real directory is an integration point.
+
+## Ownership (not in the note; added when "owner" turned out to be plural)
+
+- ⚑ **Ownership is per aspect, and the owner is a directory group**, never a person. People come
+  and go through the directory; the claim stays put.
+- ⚑ **A second OWNER claim is recorded, not refused** → `CONTESTED`. Under an aspect rule every
+  claimant must consent. The alternative (first claim wins, 409 the rest) makes the table tidy and wrong.
+- ⚑ **First claim on an UNOWNED cell wins**, by any member of the claiming group. No approval to
+  *become* an owner. Cheap to say, visible in the log; tighten by putting claims behind an approval
+  rule if that gets abused.
+- ⚑ **A record-level OWNER overrides the type default** for that aspect rather than contesting it.
+- ⚑ **Expected aspects are declared, not inferred from claims**, so coverage has a denominator
+  someone chose.
+- **LAPSED is a status, not an expiry.** A stale owner still owns and is still asked; it just shows.
+- ⚑ **Parties are frozen at filing.** Ownership changing mid-request does not re-route it.
+- ⚑ **Rules bind to the action, not the entity.** A rule is an action class mapping aspects to
+  consent/notify; it is never attached to a record or type, and the source service chooses it when
+  filing. `applies_to` limits which rules a type takes, and listing a type on any rule closes it to
+  the rest; TLC still cannot tell which of two listed rules matches what the service then does.
+- ⚑ **Declared impacts decide who is asked.** A rule aspect with a threshold only asks its owner
+  when the source service declares an impact above it; below, the owner is told the number instead.
+  Unknown and undeclared count as above. The declaration is trusted (service callers only) and is
+  not checked against anything: the control is that the bypassed group sees it.
+- ⚑ **Nothing above any threshold means approved at filing**, with nobody asked. If that is too
+  loose, keep one aspect without a threshold, or add a fixed group to the rule.
+- ⚑ **One scalar per aspect, sign ignored.** No distributions, no asymmetric thresholds
+  (+50 flags fine, -50 not), no per-owner thresholds.
+- ⚑ **An unowned CONSENT aspect blocks the request** (409) unless the rule names a `fallback_group`.
+- ⚑ **Break-glass is open to any owner in the downstream closure**, including owners of things two
+  hops away. Narrower (owners of the target only) is safer and slower.
+- ⚑ **Only the pulling side can revert early**; everyone else withholds and the TTL reverts.
+- **Ownership does not inherit along edges.** Edges answer "who is affected", not "who owns".
+  Type defaults are the only inheritance.
+- **Edges are not effective-dated**; the source service is the system of record for the graph.
+- **"Which direction is safe" is not modelled** — see the end of `docs/ownership.md`.
+
+## Things the note didn't ask for, flagged so they can be cut
+
+`known_at` · internal-object tagging · `/api/summary` · approvables and threads feeds · `client_id`
+idempotency · `awaiting=me` · the outbox · the console.

@@ -1,0 +1,18 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>TLC</title>
+<link rel="stylesheet" href="/static/tlc.css"></head>
+<body>
+<div id="p"></div>
+<script src="/static/tlc.js"></script>
+<script>
+// <iframe src="/iframe?target=service/entity/id&panels=ownership,approvals,tags,comments,logs&user=ldap&interval=5000">
+const target = TLC.qs.get('target') || '';
+const panels = (TLC.qs.get('panels') || 'ownership,approvals,tags,comments,logs').split(',').map(s => s.trim()).filter(Boolean);
+// Tell the host how tall we are so it can size the frame: {type:'tlc:height', height, target}.
+const tell = () => parent !== window && parent.postMessage({type: 'tlc:height', height: document.documentElement.scrollHeight, target}, '*');
+const p = TLC.panel(document.getElementById('p'), {target, panels, onrender: tell});
+if (TLC.qs.get('thread')) p.openThread(TLC.qs.get('thread'));
+if (!TLC.user) document.getElementById('p').innerHTML = '<div class=warn>no identity: pass ?user=&lt;ldap&gt; (dev) or front TLC with a proxy that sets X-TLC-User</div>';
+else TLC.poll(() => p.refresh(), Math.max(2000, +TLC.qs.get('interval') || 5000));
+</script>
+</body></html>

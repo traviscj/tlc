@@ -1,0 +1,39 @@
+# Comments
+
+`threads` hold a title/body and optionally point at a target. `comments` nest arbitrarily under a
+thread. `likes` record who liked which comment, and when they stopped.
+
+## Nouns × verbs
+
+| | create · `mk` | read · `ls` | update · `edit` | destroy · `rm` |
+|---|---|---|---|---|
+| **thread** | `POST /api/threads {title, body?, target?}` | `GET /api/threads?target=&creator=` · `GET /api/threads/{T}` (thread + all comments) | `PATCH /api/threads/{T} {title?, body?}` | `DELETE /api/threads/{T}` |
+| **comment** | `POST /api/comments {thread? , parent_comment?, content}` · `POST /api/threads/{T}/comments` | `GET /api/comments?thread=` · `GET /api/comments/{C}` | `PATCH /api/comments/{C} {content}` | `DELETE /api/comments/{C}` |
+
+Likes: `POST /api/comments/{C}/like`, `…/unlike`, `GET …/likes[?include_unliked=true]`.
+The CLI accepts either verb set: `tlc comment create|mk`, `read|show|ls`, `update|edit`, `destroy|rm`.
+
+## How it behaves
+
+- **`thread_path`** is the materialized ancestor chain, zero-padded ids joined by `/`
+  (`0000000007/0000000012`). `ORDER BY thread_path` under index `(thread_id, thread_path)` returns
+  the whole tree depth-first, oldest-first, in one range scan; `depth` comes along for indenting.
+  A subtree is a prefix scan.
+- **Depth cap.** A reply to a comment already at `max_comment_depth` (16) is filed as its sibling,
+  so the path can't outgrow its column and UIs don't indent off the screen.
+- **`cached_comments`** on the thread is the live comment count (plus `last_comment_at`), updated in
+  the comment's own transaction under the thread row lock — it can't drift. `likes` on a comment is
+  cached the same way under the comment row lock.
+- **Edit/rm** are for the author or an admin; anything else is a 403 with the reason.
+- **rm is a tombstone.** The content is erased in the database, `deleted_at` is set, and the row
+  stays so replies keep their parent. Replying to or liking a tombstone is a 409.
+- **Deleting a thread** hides it from lists and refuses new comments; it stays readable by token.
+- **Likes are episodes.** Unlike stamps `unliked_at`; liking again inserts a new row. A generated
+  `active` column with a unique key on `(comment_id, liked_by, active)` allows one open episode per
+  person per comment while keeping history. Like/unlike are idempotent (`changed: false`).
+- **Reply by parent alone.** `POST /api/comments {parent_comment, content}` infers the thread.
+- `liked_by_me` in comment payloads is relative to the caller.
+- Threads and comments are published on the `threads` / `comments` feeds; a comment's `shard` is its
+  thread's, so one consumer shard sees a whole conversation.
+- Services may comment too; the author is then `svc:<name>`.
+- Content is stored and returned as plain text. The bundled UIs escape it; they don't render markdown.

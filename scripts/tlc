@@ -1,0 +1,441 @@
+#!/usr/bin/env python3
+"""tlc — CLI for the TLC service (tags, logs, comments, approvals, ownership, entities). Stdlib only.
+
+  tlc [--url U] [--as LDAP] [--service SVC] [--json] NOUN VERB [args]
+
+Every noun takes both verb spellings:  create|read|update|destroy  ==  mk|ls/show|edit|rm
+Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
+
+  tlc type mk sentinel/proposed_changes [--url-template 'https://…/{id}']
+  tlc entity mk sentinel/proposed_changes/1234 --name 'raise TR limit' | ls | show REF | edit REF --name N | rm REF
+  tlc tag mk urgent [--desc D] | ls | show urgent | rm urgent          (definitions)
+  tlc tag add TARGET TAG [--at ISO] | remove TARGET TAG | is TARGET TAG [--at ISO] [--known-at ISO]
+  tlc tag was TARGET TAG [--from ISO --to ISO] | of TARGET | targets TAG | log [--target T] [--tag G]
+  tlc log add TARGET MESSAGE [--level WARN] [--source S] | ls [--target T --level L --source S -q TEXT] | tail [--target T]
+  tlc thread mk TITLE [--body B] [--target T] | ls [--target T] | show T-… | edit T-… [--title --body] | rm T-…
+  tlc comment mk T-… CONTENT [--parent C-…] | ls T-… | show C-… | edit C-… CONTENT | rm C-… | like C-… | unlike C-… | likes C-…
+  tlc group add GROUP LDAP [--admin] | rm GROUP LDAP | ls | contact GROUP [--slack '#chan'] [--email a@b] | contacts
+  tlc rule mk --requirement R --desc D [--token AR-…] [--min N] [--group ENG:trust-infra[:admins][:#chan][:a@b]]…
+              [--aspect availability[:notify][:downstream][:fallback=GROUP][:above=N][:unit=U]]… [--applies-to service/entity]… | ls | show | edit | rm
+  tlc ap mk TARGET RULE [--context C] [--client-id ID] [--requested-by LDAP] [--ratify [--ttl SECONDS]] [--impact ASPECT=N|?[:unit[:note]]]… (with --service) | ls [--target --state --awaiting LDAP|me]
+  tlc own claim TARGET ASPECT GROUP [--role STAKEHOLDER] [--at ISO] | release TARGET ASPECT GROUP | transfer TARGET ASPECT FROM TO
+  tlc own of TARGET [--at ISO] [--known-at ISO] | affirm GROUP [--target T] [--aspect A] | log [--target T --aspect A --owner G]
+  tlc own coverage [--type service/entity] | gaps [--type --aspect --status UNOWNED,CONTESTED] | by GROUP | affected TARGET [--direction up]
+  tlc own aspects [--type T] | expect service/entity ASPECT [--desc D]        (TARGET may be service/entity/* for a type-wide default)
+  tlc edge mk FROM TO [--kind FEEDS] | ls [--target T] | rm FROM TO
+  tlc ap show AP-… | approve AP-… [--comment C] | unapprove AP-… | decline AP-… [--reason R] | execute AP-…
+  tlc feed status | fetch FEED [--after N] | follow FEED [--cursor-file F] | publish
+  tlc summary TARGET | info | me
+"""
+import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
+
+ALIAS = {"create": "mk", "read": "show", "get": "show", "update": "edit", "destroy": "rm", "list": "ls", "delete": "rm"}
+A = None
+
+
+def call(method, path, body=None, **params):
+    params = {k: v for k, v in params.items() if v is not None}
+    url = A.url.rstrip("/") + path + ("?" + urllib.parse.urlencode(params) if params else "")
+    data = None
+    headers = {}
+    if A.user: headers["X-TLC-User"] = A.user
+    if A.service: headers["X-TLC-Service"] = A.service
+    if method in ("POST", "PUT", "PATCH"):
+        data = json.dumps({k: v for k, v in (body or {}).items() if v is not None}).encode()
+        headers["Content-Type"] = "application/json"
+    req = urllib.request.Request(url, data=data, method=method, headers=headers)
+    try:
+        with urllib.request.urlopen(req, timeout=15) as r:
+            text = r.read().decode()
+    except urllib.error.HTTPError as e:
+        sys.exit(f"tlc: {e.code} {e.read().decode().strip()}")
+    except urllib.error.URLError as e:
+        sys.exit(f"tlc: can't reach {A.url}: {e.reason}")
+    return json.loads(text) if text.startswith("{") else {}
+
+
+def short(ts):
+    return ts.replace("T", " ").replace("Z", "")[:19] if isinstance(ts, str) else ""
+
+
+def cell(v):
+    if v is None: return "·"
+    if isinstance(v, bool): return "y" if v else "n"
+    if isinstance(v, float) and v == int(v): return str(int(v))
+    if isinstance(v, list): return ",".join(cell(x) for x in v)
+    if isinstance(v, str) and len(v) >= 20 and v[4:5] == "-" and v.endswith("Z"): return short(v)
+    return str(v)
+
+
+def table(rows, cols):
+    """cols: 'key' or 'header=key'. Fixed-width, no chrome."""
+    spec = [(c.split("=")[0], c.split("=")[-1]) for c in cols]
+    out = [[h.upper() for h, _ in spec]] + [[cell(r.get(k)).replace("\n", " ")[:90] for _, k in spec] for r in rows]
+    w = [max(len(r[i]) for r in out) for i in range(len(spec))]
+    for r in out: print("  ".join(x.ljust(w[i]) for i, x in enumerate(r)).rstrip())
+    if not rows: print("(none)")
+
+
+def emit(data, rows_key=None, cols=None):
+    if A.json or cols is None:
+        print(json.dumps(data, indent=2))
+    else:
+        table(data[rows_key] if rows_key else [data], cols)
+
+
+def need(n, usage):
+    if len(A.args) < n: sys.exit(f"usage: tlc {usage}")
+    return A.args[:n] if n > 1 else A.args[0]
+
+
+# ------------------------------------------------------------------------------------- nouns
+
+def n_type(v):
+    cols = ["type=_ref", "entities", "token", "url_template", "created_at"]
+    fix = lambda t: dict(t, _ref=f"{t['source_service']}/{t['source_entity']}")
+    if v == "mk":
+        s, e = need(1, "type mk service/entity").split("/")
+        emit(fix(call("POST", "/api/entity-types", {"source_service": s, "source_entity": e, "description": A.desc, "url_template": A.url_template})), None, cols)
+    elif v == "ls": emit({"t": [fix(t) for t in call("GET", "/api/entity-types")["entity_types"]]}, "t", cols)
+    elif v == "show": emit(fix(call("GET", "/api/entity-types/get", type=need(1, "type show service/entity"))), None, cols)
+    elif v == "edit": emit(fix(call("PATCH", "/api/entity-types", {"description": A.desc, "url_template": A.url_template}, type=need(1, "type edit service/entity"))), None, cols)
+    elif v == "rm": emit(fix(call("DELETE", "/api/entity-types", type=need(1, "type rm service/entity"))), None, cols + ["deleted_at"])
+    else: bad(v)
+
+
+def n_entity(v):
+    cols = ["ref", "display_name", "token", "version", "created_at", "deleted_at"]
+    if v == "mk": emit(call("POST", "/api/entities", {"target": need(1, "entity mk service/entity/id"), "display_name": A.name}), None, cols)
+    elif v == "ls": emit(call("GET", "/api/entities", type=A.type, q=A.q, limit=A.limit), "entities", cols)
+    elif v == "show": emit(call("GET", "/api/entities/get", target=need(1, "entity show REF")), None, cols)
+    elif v == "edit": emit(call("PATCH", "/api/entities", {"display_name": A.name}, target=need(1, "entity edit REF --name N")), None, cols)
+    elif v == "rm": emit(call("DELETE", "/api/entities", target=need(1, "entity rm REF")), None, cols)
+    else: bad(v)
+
+
+def n_tag(v):
+    dcols = ["tag=tag_name", "now=tagged_now", "by=created_by", "effective_at", "ineffective_at", "description"]
+    q = urllib.parse.quote
+    if v == "mk": emit(call("POST", "/api/tags", {"tag_name": need(1, "tag mk NAME"), "description": A.desc, "effective_at": A.at}), None, dcols)
+    elif v == "ls": emit(call("GET", "/api/tags", include_ineffective="true" if A.all else None), "tags", dcols)
+    elif v == "show": emit(call("GET", "/api/tags/" + q(need(1, "tag show NAME"))), None, dcols)
+    elif v == "edit": emit(call("PATCH", "/api/tags/" + q(need(1, "tag edit NAME --desc D")), {"description": A.desc}), None, dcols)
+    elif v == "rm": emit(call("DELETE", "/api/tags/" + q(need(1, "tag rm NAME")), at=A.at), None, dcols)
+    elif v in ("add", "remove"):
+        t, g = need(2, f"tag {v} TARGET TAG")
+        r = call("POST", "/api/taggings/" + ("tag" if v == "add" else "untag"), {"target": t, "tag": g, "effective_at": A.at, "note": A.note, "create_tag": True})
+        emit(r, None, ["target", "tag", "changed", "tagged", "tagged_now"])
+    elif v == "is":
+        t, g = need(2, "tag is TARGET TAG")
+        r = call("GET", "/api/taggings/is-tagged", target=t, tag=g, at=A.at, known_at=A.known_at)
+        emit(r, None, ["target", "tag", "tagged", "at", "since", "by"])
+        if not A.json: sys.exit(0 if r["tagged"] else 1)  # usable in `if tlc tag is …; then`
+    elif v == "was":
+        t, g = need(2, "tag was TARGET TAG")
+        r = call("GET", "/api/taggings/was-tagged", **{"target": t, "tag": g, "from": A.from_, "to": A.to, "known_at": A.known_at})
+        if A.json: return emit(r)
+        print(f"was_tagged={cell(r['was_tagged'])} throughout={cell(r['throughout'])}")
+        table(r["intervals"], ["from", "to", "added_by", "removed_by"])
+    elif v == "of": emit(call("GET", "/api/taggings/tags", target=need(1, "tag of TARGET"), at=A.at), "tags", ["tag", "since", "by"])
+    elif v == "targets": emit(call("GET", "/api/taggings/targets", tag=need(1, "tag targets TAG"), at=A.at), "targets", ["target", "since", "by"])
+    elif v == "log": emit(call("GET", "/api/taggings", target=A.target, tag=A.tag, limit=A.limit), "taggings", ["op=operation", "tag", "target", "effective_at", "recorded=created_at", "ldap", "service", "fsi=feed_sync_id"])
+    else: bad(v)
+
+
+LOGCOLS = ["id", "time=timestamp", "lvl=level", "source", "target", "message"]
+
+
+def n_log(v):
+    if v in ("add", "mk"):
+        t, m = need(2, "log add TARGET MESSAGE")
+        emit(call("POST", "/api/logs", {"target": None if t == "-" else t, "message": m, "level": A.level, "source": A.source, "timestamp": A.at}), None, ["appended", "first_id"])
+    elif v in ("ls", "show"):
+        emit(call("GET", "/api/logs", target=A.target, entity_type=A.type, level=A.level, source=A.source, q=A.q, limit=A.limit), "entries", LOGCOLS)
+    elif v == "tail":
+        # Start from the newest 10, then follow by id cursor.
+        page = call("GET", "/api/logs", target=A.target, level=A.level, source=A.source, limit=10)
+        rows = list(reversed(page["entries"]))
+        cursor = int(page["cursor"])
+        while True:
+            for r in rows: print(f"{short(r['timestamp'])} {r['level']:<5} {r['source']:<16} {r.get('target', '-'):<34} {r['message']}", flush=True)
+            if A.once: return
+            time.sleep(1.0)
+            page = call("GET", "/api/logs", target=A.target, level=A.level, source=A.source, after_id=cursor, limit=200)
+            rows, cursor = page["entries"], int(page["cursor"])
+    else: bad(v)
+
+
+def n_thread(v):
+    cols = ["token", "title", "creator", "n=cached_comments", "target", "last=last_comment_at", "created_at"]
+    if v == "mk": emit(call("POST", "/api/threads", {"title": need(1, "thread mk TITLE"), "body": A.body, "target": A.target}), None, cols)
+    elif v == "ls": emit(call("GET", "/api/threads", target=A.target, creator=A.creator, limit=A.limit), "threads", cols)
+    elif v == "show":
+        r = call("GET", "/api/threads/" + need(1, "thread show T-…"))
+        if A.json: return emit(r)
+        t = r["thread"]
+        print(f"{t['token']}  {t['title']}  by {t['creator']}  {cell(t['cached_comments'])} comments  {t.get('target', '')}")
+        if t.get("body"): print(f"  {t['body']}")
+        for c in r["comments"]:
+            likes = f" ♥{int(c['likes'])}" if c["likes"] else ""
+            text = "[deleted]" if c.get("deleted_at") else c["content"]
+            print(f"{'  ' * (int(c['depth']) + 1)}{c['author']} {short(c['commented_at'])}{likes} {c['comment_token']}{' (edited)' if c.get('edited_at') else ''}: {text}")
+    elif v == "edit": emit(call("PATCH", "/api/threads/" + need(1, "thread edit T-… [--title --body]"), {"title": A.title, "body": A.body}), None, cols)
+    elif v == "rm": emit(call("DELETE", "/api/threads/" + need(1, "thread rm T-…")), None, cols + ["deleted_at"])
+    else: bad(v)
+
+
+def n_comment(v):
+    cols = ["token=comment_token", "thread", "parent=parent_comment", "depth", "author", "likes", "commented_at", "content"]
+    if v == "mk":
+        t, c = need(2, "comment mk T-… CONTENT [--parent C-…]")
+        emit(call("POST", "/api/comments", {"thread": t, "parent_comment": A.parent, "content": c}), None, cols)
+    elif v == "ls": emit(call("GET", "/api/comments", thread=need(1, "comment ls T-…"), limit=A.limit), "comments", cols)
+    elif v == "show": emit(call("GET", "/api/comments/" + need(1, "comment show C-…")), None, cols)
+    elif v == "edit":
+        t, c = need(2, "comment edit C-… CONTENT")
+        emit(call("PATCH", "/api/comments/" + t, {"content": c}), None, cols)
+    elif v == "rm": emit(call("DELETE", "/api/comments/" + need(1, "comment rm C-…")), None, cols + ["deleted_at"])
+    elif v in ("like", "unlike"): emit(call("POST", f"/api/comments/{need(1, f'comment {v} C-…')}/{v}"), None, ["changed", "liked", "likes"])
+    elif v == "likes": emit(call("GET", f"/api/comments/{need(1, 'comment likes C-…')}/likes", include_unliked="true" if A.all else None), "likes", ["liked_by", "liked_at", "unliked_at", "token"])
+    else: bad(v)
+
+
+def n_group(v):
+    cols = ["group=directory_group", "ldap", "admin=is_admin", "updated_at"]
+    if v in ("add", "mk"):
+        g, l = need(2, "group add GROUP LDAP [--admin]")
+        emit(call("PUT", f"/api/directory/{g}/members/{l}", admin="true" if A.admin else "false"), None, cols)
+    elif v == "rm":
+        g, l = need(2, "group rm GROUP LDAP")
+        emit(call("DELETE", f"/api/directory/{g}/members/{l}"), None, ["ok"])
+    elif v == "ls": emit(call("GET", "/api/directory", group=A.args[0] if A.args else None), "memberships", cols)
+    elif v == "contact": emit(call("PUT", f"/api/directory/{need(1, 'group contact GROUP [--slack #c] [--email e]')}/contact", slack_channel=A.slack, email=A.email), None, ["group=directory_group", "slack_channel", "email"])
+    elif v == "contacts": emit(call("GET", "/api/directory/contacts"), "groups", ["group=directory_group", "slack_channel", "email"])
+    else: bad(v)
+
+
+def parse_group(s):
+    name, reg, *rest = s.split(":")
+    return {"group": name, "directory_group": reg, "admins_only": "admins" in rest,
+            "slack_channel": next((x for x in rest if x.startswith("#")), None), "email": next((x for x in rest if "@" in x), None)}
+
+
+def parse_aspect(s):
+    name, *rest = s.split(":")
+    rest = [x for x in rest if x]
+    return {"aspect": name, "mode": "NOTIFY" if "notify" in rest else "CONSENT", "scope": "DOWNSTREAM" if "downstream" in rest else "TARGET",
+            "fallback_group": next((x.split("=", 1)[1] for x in rest if x.startswith("fallback=")), None),
+            "threshold": next((float(x.split("=", 1)[1]) for x in rest if x.startswith("above=")), None),
+            "unit": next((x.split("=", 1)[1] for x in rest if x.startswith("unit=")), None)}
+
+
+def num(x): return "?" if x is None else (str(int(x)) if float(x).is_integer() else str(x))
+
+
+def parse_impact(s):
+    """disposition=340:flags/day:30d backtest · availability=0 · efficacy=?  (? = the service does not know)"""
+    if "=" not in s: sys.exit("usage: --impact ASPECT=N|?[:unit[:note]]")
+    name, val = s.split("=", 1)
+    mag, *rest = val.split(":", 2)
+    return {"aspect": name, "magnitude": None if mag in ("?", "") else float(mag), "unit": rest[0] if rest and rest[0] else None, "note": rest[1] if len(rest) > 1 else None}
+
+
+def holders(c):
+    def one(h): return h["owner"] + ("~" if h["source"] == "TYPE" else "") + (f"({int(h['age_days'])}d)" if h["lapsed"] else "")
+    return ",".join(one(h) for h in c["owners"]) or "-", ",".join(one(h) for h in c["stakeholders"]) or "-"
+
+
+def cells(rows, target=True):
+    """One line per (record, aspect). `~` = inherited from the type default, `(Nd)` = days since last affirmed, when lapsed."""
+    out = [dict(target=c["target"], aspect=c["aspect"], status=c["status"], owner=holders(c)[0], stakeholders=holders(c)[1],
+                since=min((h["since"] for h in c["owners"]), default=None), affirmed=max((h["affirmed_at"] for h in c["owners"]), default=None)) for c in rows]
+    for o, c in zip(out, rows): o["meaning"] = (c.get("description") or "")[:72] + ("…" if len(c.get("description") or "") > 72 else "")
+    table(out, (["target"] if target else []) + ["aspect", "status", "owner", "stakeholders", "since", "affirmed"] + ([] if target or not any(o["meaning"] for o in out) else ["meaning"]))
+
+
+def n_own(v):
+    if v == "claim":
+        t, a, o = need(3, "own claim TARGET ASPECT GROUP [--role STAKEHOLDER]")
+        r = call("POST", "/api/ownership/claim", {"target": t, "aspect": a, "owner": o, "role": A.role, "effective_at": A.at, "note": A.note})
+        if A.json: return emit(r)
+        print(f"changed={cell(r['changed'])} op={r['operation']}  ", end=""); cells([r["cell"]])
+    elif v == "release":
+        t, a, o = need(3, "own release TARGET ASPECT GROUP")
+        r = call("POST", "/api/ownership/release", {"target": t, "aspect": a, "owner": o, "effective_at": A.at, "note": A.note})
+        if A.json: return emit(r)
+        print(f"changed={cell(r['changed'])}  ", end=""); cells([r["cell"]])
+    elif v == "transfer":
+        t, a, f, o = need(4, "own transfer TARGET ASPECT FROM TO")
+        r = call("POST", "/api/ownership/transfer", {"target": t, "aspect": a, "from": f, "to": o, "effective_at": A.at, "note": A.note})
+        if A.json: return emit(r)
+        cells([r["cell"]])
+    elif v == "affirm": emit(call("POST", "/api/ownership/affirm", {"owner": need(1, "own affirm GROUP [--target T] [--aspect A]"), "target": A.target, "aspect": (A.aspect or [None])[0]}), None, ["owner", "affirmed"])
+    elif v in ("of", "show"):
+        r = call("GET", "/api/ownership", target=need(1, "own of TARGET"), at=A.at, known_at=A.known_at)
+        if A.json: return emit(r)
+        cells(r["cells"], target=False)
+    elif v in ("log", "ls"): emit(call("GET", "/api/ownership/history", target=A.target, aspect=(A.aspect or [None])[0], owner=A.owner, limit=A.limit), "ownerships", ["op=operation", "aspect", "owner", "role", "target", "effective_at", "recorded=created_at", "ldap", "service", "note"])
+    elif v == "coverage":
+        r = call("GET", "/api/ownership/coverage", type=A.type, at=A.at)
+        if A.json: return emit(r)
+        cols = ["type=entity_type", "aspect", "cells", "owned", "lapsed", "contested", "unowned", "direct", "inherited", "pct=pct_owned"]
+        table(r["rows"] + [dict(r["total"], entity_type="TOTAL", aspect="")], cols)
+        print(); table(r["owners"], ["owner", "owned", "lapsed", "contested", "stakeholder"])
+    elif v == "gaps":
+        r = call("GET", "/api/ownership/gaps", type=A.type, aspect=(A.aspect or [None])[0], status=A.status, owner=A.owner, limit=A.limit)
+        if A.json: return emit(r)
+        cells(r["cells"])
+    elif v == "by":
+        r = call("GET", "/api/ownership/owned-by", owner=need(1, "own by GROUP"), limit=A.limit)
+        if A.json: return emit(r)
+        cells(r["cells"])
+    elif v == "affected":
+        r = call("GET", "/api/ownership/affected", target=need(1, "own affected TARGET [--direction up]"), direction=A.direction)
+        if A.json: return emit(r)
+        for n in r["nodes"]:
+            own = "  ".join(f"{c['aspect']}={holders(c)[0]}" + ("!" if c["status"] == "CONTESTED" else "?" if c["status"] != "OWNED" else "") for c in n["cells"])
+            label = f"{'  ' * int(n['depth'])}{'└ ' + n['via'] + ' ' if n.get('via') else ''}{n['target']}"
+            print(f"{label:<52} {own}".rstrip())
+        print(); table(r["parties"], ["party=owner", "roles", "aspects", "records", "nearest", "contested"])
+    elif v == "aspects": emit(call("GET", "/api/ownership/aspects", type=A.type), "aspects", ["type=entity_type", "aspect", "by=created_by", "description"])
+    elif v == "expect":
+        t, a = need(2, "own expect service/entity ASPECT")
+        emit(call("POST", "/api/ownership/aspects", {"type": t, "aspect": a, "description": A.desc}), None, ["type=entity_type", "aspect", "by=created_by", "description"])
+    else: bad(v)
+
+
+def n_edge(v):
+    cols = ["from", "kind", "to", "by=created_by", "token"]
+    if v == "mk":
+        f, t = need(2, "edge mk FROM TO [--kind FEEDS]")
+        emit(call("POST", "/api/edges", {"from": f, "to": t, "kind": A.kind, "note": A.note}), None, cols)
+    elif v == "ls": emit(call("GET", "/api/edges", target=A.target, limit=A.limit), "edges", cols)
+    elif v == "rm":
+        f, t = need(2, "edge rm FROM TO")
+        emit(call("DELETE", "/api/edges", **{"from": f, "to": t, "kind": A.kind}), None, ["removed"])
+    else: bad(v)
+
+
+def n_rule(v):
+    def show(r):
+        if A.json: return emit(r)
+        for x in (r["rules"] if "rules" in r else [r]):
+            mg = f">={int(x['min_groups'])}" if x.get("min_groups") else ""
+            print(f"{x['token']:<11} {x['requirement'] + mg:<24} open={int(x['open_approvables'])} v{int(x['version'])}  {x['description']}")
+            for g in x["groups"]:
+                print(f"    {g['group']:<8} <- {g['directory_group']}{' (admins only)' if g.get('admins_only') else ''}  {g.get('slack_channel', '')} {g.get('email', '')}".rstrip())
+            if x.get("applies_to"): print(f"    only for {', '.join(x['applies_to'])}")
+            for a in x.get("aspects", []):
+                print(f"    {a['mode']:<8} <- owner of '{a['aspect']}'{' incl. downstream' if a['scope'] == 'DOWNSTREAM' else ''}{' (else ' + a['fallback_group'] + ')' if a.get('fallback_group') else ''}{' when impact > ' + num(a['threshold']) + (' ' + a['unit'] if a.get('unit') else '') if a.get('threshold') is not None else ''}")
+    body = lambda: {"token": A.token, "description": A.desc, "requirement": A.requirement, "min_groups": A.min, "groups": [parse_group(g) for g in A.group] if A.group else None, "aspects": [parse_aspect(a) for a in A.aspect] if A.aspect else None, "applies_to": A.applies_to}
+    if v == "mk": show(call("POST", "/api/approval-rules", body()))
+    elif v == "ls": show(call("GET", "/api/approval-rules"))
+    elif v == "show": show(call("GET", "/api/approval-rules/" + need(1, "rule show AR-…")))
+    elif v == "edit": show(call("PATCH", "/api/approval-rules/" + need(1, "rule edit AR-… [--force]"), dict(body(), token=None), force="true" if A.force else None))
+    elif v == "rm": show(call("DELETE", "/api/approval-rules/" + need(1, "rule rm AR-…")))
+    else: bad(v)
+
+
+def n_ap(v):
+    cols = ["token", "state=approval_state", "target", "rule=approval_rule_token", "by=requested_by", "via=requested_via_service", "v=version", "created_at"]
+
+    def show(view):
+        if A.json: return emit(view)
+        a, e = view["approvable"], view["evaluation"]
+        print(f"{a['token']}  {a['approval_state']}  {a['target']}  rule={a['approval_rule_token']} ({e['requirement']})  by={a['requested_by']}{' for ' + a['acting_group'] if a.get('acting_group') else ''}  v{int(a['version'])}")
+        if a.get("mode") == "RATIFY": print("  BREAK-GLASS: already done; " + {"ACTED": f"reverts {short(a['expires_at'])} unless ratified", "RATIFIED": "ratified, it stands", "REVERTED": "NOT ratified -> the source service must undo it"}[a["approval_state"]])
+        if a.get("approval_context"): print(f"  why: {a['approval_context']}")
+        print(f"  {int(e['have'])}/{int(e['needed'])}  {e['summary']}")
+        for g in e["groups"]:
+            print(f"    {g['group']:<8} {('✓ ' + g['satisfied_by']) if g.get('satisfied_by') else '·':<12} candidates={','.join(g['candidates']) or '-'}  <- {g['directory_group']}{' admins' if g['admins_only'] else ''}")
+        for i in view.get("impacts", []):
+            print(f"    impact {i['aspect']:<12} {(num(i.get('magnitude')) if i['declared'] else 'undeclared') + (' ' + i['unit'] if i.get('unit') else ''):<16} {(i.get('rule_mode') or '-') + ' -> ' + i['effect'] if i.get('rule_mode') != i['effect'] else i['effect']:<18} {i['reason']}{'  “' + i['note'] + '”' if i.get('note') else ''}")
+        for p in view.get("parties", []):
+            print(f"    party {p['directory_group']:<10} {p['mode']:<7} {','.join(p['aspects']):<24} {p['status']:<11} {p['source']:<8} via {','.join(p['via'])}")
+        for x in view.get("approvals", []):
+            print(f"  approval {x['approved_by']:<10} {short(x['approved_at'])} via={','.join(x['via_groups']) or '-'}{'  WITHDRAWN ' + short(x['unapproved_at']) if x.get('unapproved_at') else ''}{'  “' + x['comment'] + '”' if x.get('comment') else ''}")
+        if view.get("you"): print(f"  you ({A.user}): {'may approve' if view['you']['allowed'] else 'may not approve'} — {view['you']['reason']}")
+        for k in ("approved_at", "executed_at", "declined_at"):
+            if a.get(k): print(f"  {k}={short(a[k])}" + (f" by {a['executed_by']}" if k == "executed_at" else f" by {a['declined_by']}: {a.get('decline_reason', '')}" if k == "declined_at" else ""))
+
+    def result(r):
+        if A.json: return emit(r)
+        a, e = r["approvable"], r["evaluation"]
+        print(f"changed={cell(r['changed'])}  {a['token']}  {a['approval_state']}  {int(e['have'])}/{int(e['needed'])}  {e['summary']}")
+
+    if v == "mk":
+        t, r = need(2, "ap mk TARGET RULE")
+        show(call("POST", "/api/approvables", {"target": t, "rule": r, "context": A.context, "client_id": A.client_id, "requested_by": A.requested_by, "mode": "RATIFY" if A.ratify else None, "ttl_seconds": A.ttl, "impacts": [parse_impact(i) for i in A.impact] if A.impact else None}))
+    elif v == "ls": emit(call("GET", "/api/approvables", target=A.target, state=A.state, rule=A.rule, awaiting=A.awaiting, limit=A.limit), "approvables", cols)
+    elif v == "show": show(call("GET", "/api/approvables/" + need(1, "ap show AP-…")))
+    elif v == "approve": result(call("POST", f"/api/approvables/{need(1, 'ap approve AP-…')}/approve", {"comment": A.comment}))
+    elif v == "unapprove": result(call("POST", f"/api/approvables/{need(1, 'ap unapprove AP-…')}/unapprove"))
+    elif v == "decline": result(call("POST", f"/api/approvables/{need(1, 'ap decline AP-…')}/decline", {"reason": A.reason}))
+    elif v == "execute":
+        r = call("POST", f"/api/approvables/{need(1, 'ap execute AP-…')}/execute")
+        result(r)
+        if not A.json: sys.exit(0 if r["changed"] else 3)  # 3 = someone else already claimed it
+    else: bad(v)
+
+
+def n_feed(v):
+    if v == "status": emit(call("GET", "/_feeds/status"), "feeds", ["feed", "sequence", "rows", "pending", "on=publishing_enabled"])
+    elif v == "publish": emit(call("POST", "/_feeds/publish"), None, ["published"])
+    elif v == "fetch": emit(call("GET", "/_feeds/fetch/" + need(1, "feed fetch FEED"), after=A.after, limit=A.limit))
+    elif v == "follow":
+        # A feed consumer in 15 lines: cursor in a file, at-least-once, one JSON entry per line.
+        feed = need(1, "feed follow FEED [--cursor-file F]")
+        path = A.cursor_file or f".tlc-cursor-{feed}"
+        cursor = int(open(path).read()) if os.path.exists(path) else (A.after or 0)
+        while True:
+            page = call("GET", "/_feeds/fetch/" + feed, after=cursor, limit=A.limit or 100)
+            for e in page["entries"]: print(json.dumps(e), flush=True)
+            if page["entries"]:
+                cursor = int(page["cursor"])
+                with open(path + ".tmp", "w") as f: f.write(str(cursor))
+                os.replace(path + ".tmp", path)  # commit the cursor only after the entries were handled
+            elif A.once: return
+            else: time.sleep(1.0)
+    else: bad(v)
+
+
+def bad(v):
+    sys.exit(f"tlc: unknown verb '{v}' (see tlc --help)")
+
+
+NOUNS = {"type": n_type, "entity": n_entity, "tag": n_tag, "log": n_log, "thread": n_thread, "comment": n_comment, "group": n_group, "rule": n_rule, "ap": n_ap, "approvable": n_ap, "feed": n_feed, "own": n_own, "ownership": n_own, "edge": n_edge}
+
+
+def main():
+    global A
+    p = argparse.ArgumentParser(prog="tlc", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
+    p.add_argument("--url", default=os.environ.get("TLC_URL", "http://localhost:8790"))
+    p.add_argument("--as", dest="user", default=os.environ.get("TLC_USER", os.environ.get("USER", "")))
+    p.add_argument("--service", default=os.environ.get("TLC_SERVICE"))
+    p.add_argument("--json", action="store_true")
+    p.add_argument("noun")
+    p.add_argument("verb", nargs="?")
+    p.add_argument("args", nargs="*")
+    for f in ("desc", "url-template", "name", "type", "q", "at", "known-at", "to", "note", "target", "tag", "level", "source", "body", "title", "creator", "parent",
+              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "slack", "email"):
+        p.add_argument(("-q" if f == "q" else "--" + f), default=None)
+    p.add_argument("--from", dest="from_", default=None)
+    p.add_argument("--group", action="append")
+    p.add_argument("--aspect", action="append")
+    p.add_argument("--impact", action="append")
+    p.add_argument("--applies-to", action="append", help="service/entity; repeatable. `--applies-to ""` on edit clears it")
+    for f in ("limit", "min", "after", "ttl"): p.add_argument("--" + f, type=int, default=None)
+    for f in ("all", "admin", "force", "once", "ratify"): p.add_argument("--" + f, action="store_true")
+    A = p.parse_intermixed_args()
+    if A.service and "TLC_USER" not in os.environ and "--as" not in sys.argv: A.user = ""  # a service speaks for itself unless told otherwise
+    if A.noun == "summary": return emit(call("GET", "/api/summary", target=A.verb))
+    if A.noun in ("info", "me"): return emit(call("GET", "/api/" + A.noun))
+    if A.noun not in NOUNS or not A.verb: sys.exit(__doc__.strip())
+    NOUNS[A.noun](ALIAS.get(A.verb, A.verb))
+
+
+if __name__ == "__main__":
+    try:
+        main()
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass

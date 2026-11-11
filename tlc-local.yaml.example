@@ -1,0 +1,5 @@
+# Copy to tlc-local.yaml (gitignored):  TLC_CONFIG=$PWD/tlc-local.yaml ./gradlew run
+tlc:
+  admins: [traviscj]
+  auto_register_entity_types: false
+  # slack_webhook_url: https://hooks.slack.com/services/...   # unset = notifications are only logged

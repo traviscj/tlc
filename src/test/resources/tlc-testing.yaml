@@ -1,0 +1,7 @@
+data_source:
+  database: tlc_test
+
+tlc:
+  # tests call FeedPublisher.publishAll() / NotificationDispatcher.drain() explicitly
+  background_interval_ms: 3600000
+  admins: [root]
