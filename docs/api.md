@@ -50,7 +50,7 @@ Errors are plain text with the status: **400** malformed · **401** no identity 
 
 | | | |
 |---|---|---|
-| POST | `/api/threads` | `{title, body?, target?}` |
+| POST | `/api/threads` | `{title, body?, target?, revision?}`. `target` may be a record or an internal token (`AP-…`). The thread, and each later comment, is stamped with the target's revision at the time |
 | GET | `/api/threads?target=&creator=&include_deleted=&limit=` | most recently active first |
 | GET · PATCH · DELETE | `/api/threads/{T}` | GET → `{thread, comments:[…depth-first…]}` |
 | POST | `/api/threads/{T}/comments` · `/api/comments` | `{content, parent_comment?}` · `{thread?, parent_comment?, content}` |
@@ -64,18 +64,21 @@ Errors are plain text with the status: **400** malformed · **401** no identity 
 | | | |
 |---|---|---|
 | GET | `/api/directory[?group=]` | directory stand-in |
+| GET · PUT(A) · DELETE(A) | `/api/agents` · `/api/agents/{name}?operator=&description=` | which principals are agents, and who operates each |
 | PUT(A) · DELETE(A) | `/api/directory/{group}/members/{ldap}[?admin=true]` | |
 | PUT(A) · GET | `/api/directory/{group}/contact?slack_channel=&email=` · `/api/directory/contacts` | where a group is reached (for ownership-resolved parties) |
-| POST(A) | `/api/approval-rules` | `{token?, description, requirement, min_groups?, groups:[{group, directory_group, admins_only?, slack_channel?, email?}], aspects:[{aspect, mode?: CONSENT\|NOTIFY, scope?: TARGET\|DOWNSTREAM, fallback_group?, threshold?, unit?}], applies_to?:["service/entity"]}` |
+| POST(A) | `/api/approval-rules` | `{token?, description, requirement, min_groups?, groups:[{group, directory_group, admins_only?, slack_channel?, email?}], aspects:[{aspect, mode?: CONSENT\|NOTIFY, scope?: TARGET\|DOWNSTREAM, fallback_group?, threshold?, unit?}], applies_to?:["service/entity"], checks?:[{name, description?, reporter?, min?, max?, unit?}], on_revision?: DISMISS\|KEEP, agent_approvals?: DENY\|ALLOW}`. `requirement` must be on the deployment's menu (`tlc.requirements`) |
 | GET | `/api/approval-rules` · `/api/approval-rules/{AR}` | includes `open_approvables` |
 | PATCH(A) · DELETE(A) | `/api/approval-rules/{AR}[?force=true]` | see "Changing a rule" |
-| POST | `/api/approvables` | `{target, rule, context?, client_id?, requested_by?, mode?: APPROVE\|RATIFY, ttl_seconds?, impacts?:[{aspect, magnitude: number\|null, unit?, note?}]}` → view (with `parties`, `impacts`). `impacts` only from a service caller (400 otherwise); 409 if a CONSENT aspect has no owner and no fallback; 403 on RATIFY by a non-owner |
+| POST | `/api/approvables` | `{target, rule, revision?, context?, client_id?, requested_by?, mode?: APPROVE\|RATIFY, ttl_seconds?, impacts?:[{aspect, magnitude: number\|null, unit?, note?}]}` → view (with `parties`, `impacts`). `impacts` only from a service caller (400 otherwise); 409 if a CONSENT aspect has no owner and no fallback; 403 on RATIFY by a non-owner |
 | GET | `/api/approvables?target=&state=&rule=&requested_by=&awaiting=<ldap\|me>&limit=` | |
-| GET | `/api/approvables/{AP}` | `{approvable, rule, approvals[], evaluation, you?, parties[]}` — `rule.groups` includes this approvable's CONSENT parties |
-| POST | `/api/approvables/{AP}/approve` | `{comment?}` → `{changed, approvable, evaluation}` |
+| GET | `/api/approvables/{AP}` | `{approvable, rule, approvals[], evaluation, you?, parties[], impacts[], revisions[], threads[], check_reports[]}`. `rule.groups` includes this approvable's CONSENT parties; `evaluation` = `{satisfied, approvals_satisfied, needed, have, groups[], checks[], summary}`; each approval has `revision`, `superseded`, `stale`, `agent`, `operator` |
+| POST | `/api/approvables/{AP}/approve` | `{comment?, revision?}` → `{changed, approvable, evaluation}`. 409 if `revision` is not the current one. A person, or an agent under `agent_approvals: ALLOW` |
+| POST | `/api/approvables/{AP}/revise` | `{revision, context?}`: the target changed. Requesting side or admin; 409 on a reused label or a closed request. Approvals are dismissed or kept per the rule's `on_revision` |
+| POST | `/api/approvables/{AP}/checks` | `{name, status?: PENDING\|PASS\|FAIL, value?, summary?, url?, revision?}`, service callers only. With bounds on the rule's check the `value` decides; 403 if the rule names another `reporter`; 409 for a result about another revision |
 | POST | `/api/approvables/{AP}/unapprove` | |
 | POST | `/api/approvables/{AP}/decline` | `{reason?}` — on an `ACTED` one this is *revert* (requester / acting group / admin only) |
-| POST | `/api/approvables/{AP}/execute` | `{expected_version?}` — apply the change only if `changed` |
+| POST | `/api/approvables/{AP}/execute` | `{revision?, expected_version?}`: apply the change only if `changed`. 409 if `revision` is not the approved one |
 | GET | `/api/notifications?approvable=&status=&limit=` | the outbox |
 
 States: `PENDING APPROVED EXECUTED DECLINED` (ask first) · `ACTED RATIFIED REVERTED` (`mode=RATIFY`).

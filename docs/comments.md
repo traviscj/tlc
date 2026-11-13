@@ -3,11 +3,35 @@
 `threads` hold a title/body and optionally point at a target. `comments` nest arbitrarily under a
 thread. `likes` record who liked which comment, and when they stopped.
 
+A thread's target is anything: a record (`sentinel/proposed_changes/1234`), an approval request
+(`AP-…`), another thread, or nothing.
+
+## On a request, and at a revision
+
+The discussion that decides a change belongs on the request, not scattered across the record: it is
+what an approver reads before signing and what an auditor reads after. So a thread can be opened on
+an approvable, and since the thing under review [changes while it is discussed](approvals.md#revisions-what-exactly-is-being-approved),
+every thread and every comment records the **revision its target was at when it was written**.
+
+![comments panel: a thread on the request, opened at @3; comments at @3 and @4; one from an agent](img/comments.png)
+
+| | |
+|---|---|
+| open on a request | `POST /api/threads {target: "AP-…", title}` · `tlc thread mk "…" --target AP-…` · the "on …" selector in the panel |
+| `revision` on a thread | where it was opened. An approvable target: its revision then. A record target: the latest revision TLC had been told for that record. Does not move |
+| `revision` on a comment | the same lookup at the moment the comment was written. A thread opened at `@3` collects `@3` comments, then `@4` ones after a revise, so "that was about the old version" is on the page |
+| pin on purpose | `POST /api/threads {target, revision: "3"}` opens a thread about an older revision |
+| where they show | `GET /api/approvables/{AP}` → `threads[]`; `GET /api/summary?target=<record>` lists the record's threads **and** those on its approvables, with what each is `on` |
+| who | people, [agents](approvals.md#agents) and services alike. An agent that may not approve under a rule can still say what it found |
+
+TLC does not mark an old comment "outdated" or hide it. Whether a `@3` comment still applies at `@4`
+is a judgement, and the revision stamp is the evidence for making it.
+
 ## Nouns × verbs
 
 | | create · `mk` | read · `ls` | update · `edit` | destroy · `rm` |
 |---|---|---|---|---|
-| **thread** | `POST /api/threads {title, body?, target?}` | `GET /api/threads?target=&creator=` · `GET /api/threads/{T}` (thread + all comments) | `PATCH /api/threads/{T} {title?, body?}` | `DELETE /api/threads/{T}` |
+| **thread** | `POST /api/threads {title, body?, target?, revision?}` | `GET /api/threads?target=&creator=` · `GET /api/threads/{T}` (thread + all comments) | `PATCH /api/threads/{T} {title?, body?}` | `DELETE /api/threads/{T}` |
 | **comment** | `POST /api/comments {thread? , parent_comment?, content}` · `POST /api/threads/{T}/comments` | `GET /api/comments?thread=` · `GET /api/comments/{C}` | `PATCH /api/comments/{C} {content}` | `DELETE /api/comments/{C}` |
 
 Likes: `POST /api/comments/{C}/like`, `…/unlike`, `GET …/likes[?include_unliked=true]`.

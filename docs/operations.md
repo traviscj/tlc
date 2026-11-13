@@ -22,6 +22,7 @@ startup — right for a single self-hosted instance. Migrations are **one statem
 | `data_source.*` | mysql root@127.0.0.1:3306 / `tlc_dev` | tests use `tlc_test` |
 | `tlc.admins` | `[traviscj]` | ldaps with the admin capability |
 | `tlc.auto_register_entity_types` | false | true: unknown `service/entity` refs register the type |
+| `tlc.requirements` | unset (all) | the requirement types offered when a rule is written, e.g. `[ALL_GROUPS, MIN_GROUPS]`; see [approvals](approvals.md#requirements-a-menu) |
 | `tlc.background_interval_ms` | 500 | feed publish + notification drain period |
 | `tlc.feed_shards` | 16 | changing it only affects rows written afterwards |
 | `tlc.max_comment_depth` | 16 | |

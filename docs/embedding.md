@@ -16,9 +16,12 @@
 | `interval` | poll period ms (default 5000, min 2000) |
 | `user` | dev only: who to act as (see below) |
 
-It shows, for that one target: approvables with the live evaluation and the buttons the viewer is
-actually allowed to use (approve / unapprove / execute / decline), a request form; current tags
-with since/by and the last operations; threads, the open thread as a tree with reply / like / edit /
+![the widget for sentinel/proposed_changes/1234, viewed as dave](img/iframe.png)
+
+It shows, for that one target: approvables with their current revision (`@4`), the live evaluation,
+check results, the revision trail, and the buttons the viewer is actually allowed to use (approve /
+unapprove / execute / decline), a request form; current tags
+with since/by and the last operations; threads on the record and on its requests, the open thread as a tree with reply / like / edit /
 rm; recent logs with a level filter. It re-fetches on an interval and after every action, and won't
 re-render under a form someone is typing in.
 
@@ -38,11 +41,16 @@ needs nothing. In dev, `?user=alice` (or the console's "as" box, kept in localSt
 
 ## `/` — the console
 
+![the console: three columns, the selected record in the middle](img/console.png)
+
 Three columns, everything visible at once: types / entities / tags / tlcers / directory · the
 selected target (the same panel the iframe uses) · approvables (▸ marks your queue) / rules /
 outbox / feeds / global log tail. Click any row to open its target; `#target=…` and
 `#approvable=AP-…` are linkable. Admins get inline forms for types, directory members and rules
 (`groups: ENG:trust-infra:#chan, RISK:trust-risk:admins`).
+
+Each panel is a `<section data-panel=ownership|approvals|tags|comments|logs>`, so a host page can
+style or hide one. `scripts/ui_shots.py` regenerates every screenshot in these docs from a seeded instance.
 
 Both UIs are plain files in `src/main/resources/web/` sharing `tlc.js` (API client, `TLC.panel`,
 `TLC.poll`) and `tlc.css`. Polling is one self-rescheduling loop: at most one tick in flight, an

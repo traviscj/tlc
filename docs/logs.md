@@ -19,6 +19,8 @@ GET  /api/logs?after_id=<cursor>                      # tail: ascending, returns
 - **timestamp** is the caller's clock (defaults to now); `created_at` is the server's. Both are returned.
 - Default order is newest-first; with `after_id` it is oldest-first so a tailer can append.
 
+![logs panel: sentinel's entries and TLC's own tlc.* audit lines on one record](img/logs.png)
+
 ## TLC's own audit trail
 
 TLC writes to the same log, in the same transaction as the change it describes:
