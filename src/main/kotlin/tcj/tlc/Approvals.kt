@@ -120,6 +120,9 @@ enum class Requirement(val needsGroups: Boolean, val notifyOnly: Boolean, val do
   companion object {
     fun parse(s: String?): Requirement = entries.firstOrNull { it.name == s?.trim()?.uppercase() }
       ?: throw BadRequestException("bad requirement '$s' (have: ${entries.joinToString()})")
+
+    /** The menu a deployment offers: every entry, or the ones `tlc.requirements` names (in that order). */
+    fun offered(configured: List<String>?): List<Requirement> = configured?.map(::parse)?.distinct() ?: entries
   }
 }
 
@@ -364,6 +367,9 @@ class ApprovalStore @Inject constructor(
 ) {
   // ------------------------------------------------------------------------------- rules
 
+  private val menu = Requirement.offered(config.tlc.requirements)
+  private fun onMenu(req: Requirement): Requirement = if (req in menu) req else throw BadRequestException("$req is not offered here (tlc.requirements: ${menu.joinToString()})")
+
   private fun aspectsOf(c: Connection, token: String): List<RuleAspectDto> =
     c.select("SELECT * FROM approval_rule_aspects WHERE approval_rule_token = ? ORDER BY id", listOf(token)) {
       RuleAspectDto(it.getString("aspect"), it.getString("mode"), it.getString("scope"), it.getString("fallback_group"), it.getDouble("threshold").takeUnless { _ -> it.wasNull() }, it.getString("unit"))
@@ -480,7 +486,7 @@ class ApprovalStore @Inject constructor(
 
   fun createRule(actor: Actor, token: String?, description: String, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>, aspects: List<RuleAspectDto> = listOf(), appliesTo: List<String> = listOf(), onRevision: String? = null, checks: List<RuleCheckDto> = listOf(), agentApprovals: String? = null): RuleDto = db.tx { c ->
     tlcers.touch(c, actor)
-    val req = Requirement.parse(requirement)
+    val req = onMenu(Requirement.parse(requirement))
     val onRev = onRevision(onRevision) ?: "DISMISS"
     val asp = normAspects(aspects)
     val n = validate(req, minGroups, groups, asp)
@@ -514,7 +520,8 @@ class ApprovalStore @Inject constructor(
     c.select("SELECT id FROM approval_rules WHERE token = ? FOR UPDATE", listOf(token)) { it.getLong(1) }.firstOrNull() ?: throw NotFoundException("no approval rule '$token'")
     val old = rule(c, token)
     if (old.deleted_at != null) throw ConflictException("approval rule $token was deleted")
-    val req = requirement?.let(Requirement::parse) ?: Requirement.valueOf(old.requirement)
+    // A rule already on a requirement that has since left the menu may keep it; it can't move *to* one that is off.
+    val req = requirement?.let(Requirement::parse)?.let { if (it.name == old.requirement) it else onMenu(it) } ?: Requirement.valueOf(old.requirement)
     val newGroups = groups ?: old.groups
     val wantMin = if (req == Requirement.MIN_GROUPS) (minGroups ?: old.min_groups) else minGroups
     val newAspects = aspects?.let(::normAspects) ?: old.aspects

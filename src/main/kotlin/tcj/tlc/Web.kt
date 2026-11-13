@@ -62,7 +62,7 @@ class InfoActions @Inject constructor(
     return InfoDto(
       settings = linkedMapOf("public_url" to s.public_url, "admins" to s.admins, "auto_register_entity_types" to s.auto_register_entity_types, "feed_shards" to s.feed_shards, "max_comment_depth" to s.max_comment_depth, "background_interval_ms" to s.background_interval_ms, "slack_webhook" to (s.slack_webhook_url != null), "ownership_lapse_days" to s.ownership_lapse_days, "ratify_ttl_seconds" to s.ratify_ttl_seconds),
       counts = counts,
-      requirements = Requirement.entries.map { EnumValue(it.name, it.doc) },
+      requirements = Requirement.offered(s.requirements).map { EnumValue(it.name, it.doc) },
       states = listOf(
         EnumValue("PENDING", "initial; waiting on approvals"),
         EnumValue("APPROVED", "requirement met; may still drop back to PENDING if an approval is withdrawn"),
