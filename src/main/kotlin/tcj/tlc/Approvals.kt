@@ -124,10 +124,19 @@ data class RuleDto(
    * Listing a type on any live rule closes it: only rules that list it may then be filed against it.
    */
   val applies_to: List<String> = listOf(),
+  /**
+   * What a new revision of an approvable does to the approvals already on it. DISMISS: they are
+   * withdrawn and must be given again. KEEP: they stand, each still showing the revision it was given at.
+   */
+  val on_revision: String = "DISMISS",
 )
 
 private val RULE_TOKEN_RE = Regex("AR-[A-Za-z0-9][A-Za-z0-9_-]{0,27}")
 private val GROUP_RE = Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,95}")
+/** A revision label is the source service's own: a counter, a content hash, a commit. TLC orders them by arrival. */
+private val REVISION_RE = Regex("[A-Za-z0-9][A-Za-z0-9_.+:-]{0,63}")
+private fun revisionLabel(s: String?): String? = s?.trim()?.removePrefix("@")?.takeIf { it.isNotEmpty() }?.also { if (!REVISION_RE.matches(it)) throw BadRequestException("revision must match ${REVISION_RE.pattern}") }
+private fun onRevision(s: String?): String? = s?.trim()?.uppercase()?.also { if (it !in setOf("DISMISS", "KEEP")) throw BadRequestException("on_revision is DISMISS or KEEP") }
 
 // ================================================================================= engine
 
@@ -219,9 +228,25 @@ data class ApprovableDto(
   val expires_at: String? = null,
   /** RATIFY: the owning group the requester acted for. */
   val acting_group: String? = null,
+  /** Which revision of the target is up for approval, in the source service's own labels (`…/1234@3`). null: the service never said. */
+  val revision: String? = null,
+  /** 1 at filing, +1 per revise. Approvals, and what they count for, are per revision. */
+  val revision_seq: Int = 1,
 )
 
-data class ApprovalDto(val token: String, val approvable_token: String, val approved_by: String, val approved_at: String, val unapproved_at: String?, /** Rule groups the approver could approve for at that moment (snapshot). */ val via_groups: List<String>, val comment: String?)
+data class ApprovalDto(
+  val token: String, val approvable_token: String, val approved_by: String, val approved_at: String, val unapproved_at: String?,
+  /** Rule groups the approver could approve for at that moment (snapshot). */ val via_groups: List<String>, val comment: String?,
+  /** The revision that was approved. */
+  val revision: String? = null,
+  val revision_seq: Int = 1,
+  /** Ended by a later revision (the rule's on_revision is DISMISS), not by the approver. */
+  val superseded: Boolean = false,
+  /** Still counted, but given at an earlier revision than the current one (on_revision is KEEP). */
+  val stale: Boolean = false,
+)
+/** One revision of an approvable: what was put up for approval, by whom, and how many approvals it displaced. */
+data class RevisionDto(val seq: Int, val revision: String?, val context: String?, val revised_by: String, val via_service: String?, val created_at: String, val dismissed: Int)
 data class CanApprove(val allowed: Boolean, val reason: String, val via_groups: List<String>)
 /** What the source service says an action does to one aspect. `magnitude` null = it does not know. */
 data class ImpactReq(val aspect: String?, val magnitude: Double? = null, val unit: String? = null, val note: String? = null)
@@ -242,7 +267,7 @@ data class ImpactDto(
   val reason: String,
 )
 
-data class ApprovableView(val approvable: ApprovableDto, /** `groups` here = the rule's own groups + this approvable's CONSENT parties. */ val rule: RuleDto, val approvals: List<ApprovalDto>, val evaluation: Evaluation, /** For the calling human. */ val you: CanApprove?, /** Groups pulled in by ownership, frozen at filing. */ val parties: List<PartyDto> = listOf(), /** Declared impacts and what they did to each rule aspect, frozen at filing. */ val impacts: List<ImpactDto> = listOf())
+data class ApprovableView(val approvable: ApprovableDto, /** `groups` here = the rule's own groups + this approvable's CONSENT parties. */ val rule: RuleDto, val approvals: List<ApprovalDto>, val evaluation: Evaluation, /** For the calling human. */ val you: CanApprove?, /** Groups pulled in by ownership, frozen at filing. */ val parties: List<PartyDto> = listOf(), /** Declared impacts and what they did to each rule aspect, frozen at filing. */ val impacts: List<ImpactDto> = listOf(), /** Every revision this approvable has been through, oldest first; the last is the one being decided. */ val revisions: List<RevisionDto> = listOf())
 data class ActionResult(val changed: Boolean, val approvable: ApprovableDto, val evaluation: Evaluation)
 
 private val OPEN = "('PENDING','APPROVED','ACTED')"
@@ -316,7 +341,7 @@ class ApprovalStore @Inject constructor(
     c.select("SELECT r.*, (SELECT COUNT(*) FROM approvables a WHERE a.approval_rule_token = r.token AND a.approval_state IN $OPEN) AS open_n FROM approval_rules r $where", args) { rs ->
       RuleDto(
         rs.getString("token"), rs.getString("description"), rs.getString("requirement"), rs.getInt("min_groups").takeUnless { rs.wasNull() }, listOf(),
-        rs.getString("created_by"), rs.getLong("open_n"), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("deleted_at_ms"), rs.getInt("version"),
+        rs.getString("created_by"), rs.getLong("open_n"), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("deleted_at_ms"), rs.getInt("version"), on_revision = rs.getString("on_revision"),
       )
     }.map { it.copy(groups = groupsOf(c, it.token), aspects = aspectsOf(c, it.token), applies_to = appliesTo(c, it.token)) }
 
@@ -353,9 +378,10 @@ class ApprovalStore @Inject constructor(
     }
   }
 
-  fun createRule(actor: Actor, token: String?, description: String, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>, aspects: List<RuleAspectDto> = listOf(), appliesTo: List<String> = listOf()): RuleDto = db.tx { c ->
+  fun createRule(actor: Actor, token: String?, description: String, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>, aspects: List<RuleAspectDto> = listOf(), appliesTo: List<String> = listOf(), onRevision: String? = null): RuleDto = db.tx { c ->
     tlcers.touch(c, actor)
     val req = Requirement.parse(requirement)
+    val onRev = onRevision(onRevision) ?: "DISMISS"
     val asp = normAspects(aspects)
     val n = validate(req, minGroups, groups, asp)
     if (token != null && !RULE_TOKEN_RE.matches(token)) throw BadRequestException("rule token must match ${RULE_TOKEN_RE.pattern}")
@@ -367,7 +393,7 @@ class ApprovalStore @Inject constructor(
       throw ConflictException("approval rule $tok already exists")
     }
     val now = clock.millis()
-    c.insert("INSERT INTO approval_rules (created_at_ms, updated_at_ms, token, description, requirement, min_groups, created_by) VALUES (?,?,?,?,?,?,?)", listOf(now, now, tok, description, req.name, n, actor.name))
+    c.insert("INSERT INTO approval_rules (created_at_ms, updated_at_ms, token, description, requirement, min_groups, created_by, on_revision) VALUES (?,?,?,?,?,?,?,?)", listOf(now, now, tok, description, req.name, n, actor.name, onRev))
     writeGroups(c, tok!!, groups)
     writeAspects(c, tok, asp)
     writeAppliesTo(c, tok, appliesTo)
@@ -383,7 +409,7 @@ class ApprovalStore @Inject constructor(
    * under it would move the goalposts mid-flight, so that is a 409 unless [force]; with force,
    * every open approvable is re-evaluated in this transaction and may flip PENDING<->APPROVED.
    */
-  fun updateRule(actor: Actor, token: String, description: String?, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>?, force: Boolean, aspects: List<RuleAspectDto>? = null, appliesTo: List<String>? = null): RuleDto = db.tx { c ->
+  fun updateRule(actor: Actor, token: String, description: String?, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>?, force: Boolean, aspects: List<RuleAspectDto>? = null, appliesTo: List<String>? = null, onRevision: String? = null): RuleDto = db.tx { c ->
     c.select("SELECT id FROM approval_rules WHERE token = ? FOR UPDATE", listOf(token)) { it.getLong(1) }.firstOrNull() ?: throw NotFoundException("no approval rule '$token'")
     val old = rule(c, token)
     if (old.deleted_at != null) throw ConflictException("approval rule $token was deleted")
@@ -392,10 +418,11 @@ class ApprovalStore @Inject constructor(
     val wantMin = if (req == Requirement.MIN_GROUPS) (minGroups ?: old.min_groups) else minGroups
     val newAspects = aspects?.let(::normAspects) ?: old.aspects
     val n = validate(req, wantMin, newGroups, newAspects)
-    val policyChanged = req.name != old.requirement || n != old.min_groups || newGroups != old.groups || newAspects != old.aspects
+    val onRev = onRevision(onRevision) ?: old.on_revision
+    val policyChanged = req.name != old.requirement || n != old.min_groups || newGroups != old.groups || newAspects != old.aspects || onRev != old.on_revision
     val open = c.select("SELECT id FROM approvables WHERE approval_rule_token = ? AND approval_state IN $OPEN ORDER BY id FOR UPDATE", listOf(token)) { it.getLong(1) }
     if (policyChanged && open.isNotEmpty() && !force) throw ConflictException("${open.size} approvable(s) are open under $token; pass force=true to change its requirement and re-evaluate them")
-    c.exec("UPDATE approval_rules SET description = COALESCE(?, description), requirement = ?, min_groups = ?, updated_at_ms = ?, version = version + 1 WHERE token = ?", listOf(description, req.name, n, clock.millis(), token))
+    c.exec("UPDATE approval_rules SET description = COALESCE(?, description), requirement = ?, min_groups = ?, on_revision = ?, updated_at_ms = ?, version = version + 1 WHERE token = ?", listOf(description, req.name, n, onRev, clock.millis(), token))
     if (policyChanged) {
       writeGroups(c, token, newGroups)
       // Aspects apply to approvables filed from now on: open ones keep the parties they were filed with.
@@ -426,16 +453,36 @@ class ApprovalStore @Inject constructor(
         r.getString("requested_via_service"), r.getString("client_id"), r.isoOrNull("approved_at_ms"), r.isoOrNull("executed_at_ms"), r.getString("executed_by"),
         r.isoOrNull("declined_at_ms"), r.getString("declined_by"), r.getString("decline_reason"), iso(r.getLong("created_at_ms")), iso(r.getLong("updated_at_ms")),
         r.getInt("version"), r.longOrNull("feed_sync_id"), r.getInt("shard"), r.getString("mode"), r.isoOrNull("expires_at_ms"), r.getString("acting_group"),
+        r.getString("revision"), r.getInt("revision_seq"),
       ))
     }.map { Row(it.id, it.entityId, it.dto.copy(target = entities.refOf(c, it.entityId))) }
 
   private fun row(c: Connection, token: String, lock: Boolean = false): Row =
     rows(c, "WHERE g.token = ?${if (lock) " FOR UPDATE" else ""}", listOf(token)).firstOrNull() ?: throw NotFoundException("no approvable '$token'")
 
-  private fun approvals(c: Connection, id: Long, liveOnly: Boolean): List<ApprovalDto> =
+  /** [currentSeq]: the approvable's revision_seq, to mark live approvals given at an earlier revision as stale. */
+  private fun approvals(c: Connection, id: Long, liveOnly: Boolean, currentSeq: Int? = null): List<ApprovalDto> =
     c.select("SELECT * FROM approvals WHERE approvable_id = ? ${if (liveOnly) "AND active = 1" else ""} ORDER BY id", listOf(id)) {
-      ApprovalDto(it.getString("token"), it.getString("approvable_token"), it.getString("approved_by"), iso(it.getLong("approved_at_ms")), it.isoOrNull("unapproved_at_ms"), it.getString("via_groups").split(',').filter(String::isNotEmpty), it.getString("comment"))
+      val seq = it.getInt("revision_seq")
+      val ended = it.isoOrNull("unapproved_at_ms")
+      ApprovalDto(
+        it.getString("token"), it.getString("approvable_token"), it.getString("approved_by"), iso(it.getLong("approved_at_ms")), ended, it.getString("via_groups").split(',').filter(String::isNotEmpty), it.getString("comment"),
+        it.getString("revision"), seq, it.longOrNull("superseded_by_seq") != null, ended == null && currentSeq != null && seq < currentSeq,
+      )
     }
+
+  private fun revisions(c: Connection, id: Long): List<RevisionDto> =
+    c.select("SELECT * FROM approvable_revisions WHERE approvable_id = ? ORDER BY seq", listOf(id)) {
+      RevisionDto(it.getInt("seq"), it.getString("revision"), it.getString("context"), it.getString("revised_by"), it.getString("via_service"), iso(it.getLong("created_at_ms")), it.getInt("dismissed"))
+    }
+
+  /** `@3`, or `#2` (the second revision) when the source service gave no label. */
+  private fun at(revision: String?, seq: Int) = revision?.let { "@$it" } ?: "#$seq"
+
+  /** The record's latest revision as far as TLC has been told; threads and comments on it are stamped with this. */
+  private fun noteRevision(c: Connection, entityId: Long, revision: String?) {
+    if (revision != null) c.exec("UPDATE external_entities SET revision = ?, updated_at_ms = ?, version = version + 1 WHERE id = ? AND NOT (revision <=> ?)", listOf(revision, clock.millis(), entityId, revision))
+  }
 
   private fun parties(c: Connection, id: Long): List<PartyDto> =
     c.select("SELECT * FROM approvable_parties WHERE approvable_id = ? ORDER BY id", listOf(id)) {
@@ -584,12 +631,13 @@ class ApprovalStore @Inject constructor(
    * REVERTED when its TTL runs out first — at which point the source service undoes the action.
    * Only someone who owns an aspect of the target or of anything built on it (or an admin) may pull it.
    */
-  fun create(actor: Actor, targetRef: String, ruleToken: String, context: String?, clientId: String?, requestedBy: String?, mode: String? = null, ttlSeconds: Long? = null, declared: List<ImpactReq> = listOf()): ApprovableView = db.tx { c ->
+  fun create(actor: Actor, targetRef: String, ruleToken: String, context: String?, clientId: String?, requestedBy: String?, mode: String? = null, ttlSeconds: Long? = null, declared: List<ImpactReq> = listOf(), revision: String? = null): ApprovableView = db.tx { c ->
     tlcers.touch(c, actor)
     // An impact declaration decides who is asked, so it has to come from the system that computed
     // it (and is vouching for it), the same way only a service may set requested_by.
     if (declared.isNotEmpty() && actor.service == null) throw BadRequestException("impacts can only be declared by a service caller")
     val ratify = when ((mode ?: "APPROVE").trim().uppercase()) { "APPROVE" -> false; "RATIFY" -> true; else -> throw BadRequestException("mode is APPROVE or RATIFY") }
+    val rev = revisionLabel(revision)
     val base = rule(c, ruleToken)
     var rule = base
     if (rule.deleted_at != null) throw ConflictException("approval rule $ruleToken was deleted")
@@ -629,10 +677,12 @@ class ApprovalStore @Inject constructor(
       expires = now + (ttlSeconds ?: config.tlc.ratify_ttl_seconds).coerceIn(1, 7 * 86_400) * 1000
     } else if (ttlSeconds != null) throw BadRequestException("ttl_seconds only applies to mode=RATIFY")
     c.insert(
-      "INSERT INTO approvables (created_at_ms, updated_at_ms, token, external_entity_id, approval_context, approval_rule_token, approval_state, requested_by, requested_via_service, client_id, shard, mode, expires_at_ms, acting_group) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-      listOf(now, now, token, target.entityId, context, ruleToken, if (ratify) "ACTED" else "PENDING", requester, actor.service, clientId, shardOf(target.key, config.tlc.feed_shards), if (ratify) "RATIFY" else "APPROVE", expires, actingGroup),
+      "INSERT INTO approvables (created_at_ms, updated_at_ms, token, external_entity_id, approval_context, approval_rule_token, approval_state, requested_by, requested_via_service, client_id, shard, mode, expires_at_ms, acting_group, revision) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      listOf(now, now, token, target.entityId, context, ruleToken, if (ratify) "ACTED" else "PENDING", requester, actor.service, clientId, shardOf(target.key, config.tlc.feed_shards), if (ratify) "RATIFY" else "APPROVE", expires, actingGroup, rev),
     )
     val r = row(c, token)
+    c.insert("INSERT INTO approvable_revisions (created_at_ms, approvable_id, seq, revision, context, revised_by, via_service) VALUES (?,?,?,?,?,?,?)", listOf(now, r.id, 1, rev, context, requester, actor.service))
+    noteRevision(c, target.entityId, rev)
     for (p in found) c.insert(
       "INSERT INTO approvable_parties (created_at_ms, approvable_id, directory_group, mode, aspects, status, source, via, slack_channel, email) VALUES (?,?,?,?,?,?,?,?,?,?)",
       listOf(now, r.id, p.directory_group, p.mode, p.aspects.joinToString(","), p.status, p.source, p.via.joinToString(",").take(1024), p.slack_channel, p.email),
@@ -648,7 +698,7 @@ class ApprovalStore @Inject constructor(
       notify(c, r, rule, "ACTED", "BREAK-GLASS by $requester${actingGroup?.let { " ($it)" } ?: ""}${context?.let { ": $it" } ?: ""} — already done; reverts ${iso(expires)} unless ratified")
       return@tx view(c, token, actor)
     }
-    audit(c, r, LogLevel.INFO, "approval requested by $requester under ${rule.token} (${rule.requirement})")
+    audit(c, r, LogLevel.INFO, "approval requested by $requester${rev?.let { " for @$it" } ?: ""} under ${rule.token} (${rule.requirement})")
     if (req.notifyOnly) {
       notify(c, r, rule, "NOTIFY", "change by $requester${context?.let { ": $it" } ?: ""}")
       setState(c, r.id, "APPROVED", ", approved_at_ms = ?", listOf(now))
@@ -664,7 +714,7 @@ class ApprovalStore @Inject constructor(
   private fun view(c: Connection, token: String, viewer: Actor?): ApprovableView {
     val r = row(c, token)
     val rule = ruleFor(c, r)
-    return ApprovableView(r.dto, rule, approvals(c, r.id, liveOnly = false), evaluate(c, r, rule), viewer?.ldap?.let { canApprove(c, r, rule, it) }, parties(c, r.id), impacts(c, r.id))
+    return ApprovableView(r.dto, rule, approvals(c, r.id, liveOnly = false, currentSeq = r.dto.revision_seq), evaluate(c, r, rule), viewer?.ldap?.let { canApprove(c, r, rule, it) }, parties(c, r.id), impacts(c, r.id), revisions(c, r.id))
   }
 
   fun get(token: String, viewer: Actor?): ApprovableView = db.tx { c -> view(c, token, viewer) }
@@ -687,11 +737,13 @@ class ApprovalStore @Inject constructor(
     }.take(limit).map { it.dto }
   }
 
-  fun approve(actor: Actor, token: String, comment: String?): ActionResult = db.tx { c ->
+  /** [revision]: the revision the approver looked at. If the approvable has moved on since, it is a 409 rather than an approval of something unread. */
+  fun approve(actor: Actor, token: String, comment: String?, revision: String? = null): ActionResult = db.tx { c ->
     val ldap = actor.requireHuman("approving")
     tlcers.touch(c, actor)
     val r = row(c, token, lock = true)
     val rule = ruleFor(c, r)
+    revisionLabel(revision)?.let { if (it != r.dto.revision) throw ConflictException("$token is now at ${at(r.dto.revision, r.dto.revision_seq)}, not @$it: look at the current revision before approving") }
     val can = canApprove(c, r, rule, ldap)
     if (!can.allowed) {
       if (r.dto.approval_state !in LIVE || Requirement.valueOf(rule.requirement).notifyOnly) throw ConflictException("can't approve $token: ${can.reason}")
@@ -700,11 +752,11 @@ class ApprovalStore @Inject constructor(
     if (approvals(c, r.id, liveOnly = true).any { it.approved_by == ldap }) return@tx result(c, token, false, rule)
     val now = clock.millis()
     c.insert(
-      "INSERT INTO approvals (created_at_ms, updated_at_ms, token, approvable_id, approvable_token, approved_by, approved_at_ms, via_groups, comment) VALUES (?,?,?,?,?,?,?,?,?)",
-      listOf(now, now, newToken("A"), r.id, token, ldap, now, can.via_groups.joinToString(","), comment),
+      "INSERT INTO approvals (created_at_ms, updated_at_ms, token, approvable_id, approvable_token, approved_by, approved_at_ms, via_groups, comment, revision_seq, revision) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      listOf(now, now, newToken("A"), r.id, token, ldap, now, can.via_groups.joinToString(","), comment, r.dto.revision_seq, r.dto.revision),
     )
     c.exec("UPDATE approvables SET updated_at_ms = ?, version = version + 1, feed_sync_id = NULL WHERE id = ?", listOf(now, r.id))
-    audit(c, r, LogLevel.INFO, "approved by $ldap${if (can.via_groups.isNotEmpty()) " as ${can.via_groups.joinToString()}" else ""}")
+    audit(c, r, LogLevel.INFO, "approved by $ldap${if (can.via_groups.isNotEmpty()) " as ${can.via_groups.joinToString()}" else ""}${r.dto.revision?.let { " at @$it" } ?: ""}")
     reevaluate(c, r.id, rule, "approval by $ldap")
     result(c, token, true, rule)
   }
@@ -721,6 +773,37 @@ class ApprovalStore @Inject constructor(
     c.exec("UPDATE approvables SET updated_at_ms = ?, version = version + 1, feed_sync_id = NULL WHERE id = ?", listOf(now, r.id))
     audit(c, r, LogLevel.INFO, "approval withdrawn by $ldap")
     reevaluate(c, r.id, rule, "approval withdrawn by $ldap")
+    result(c, token, true, rule)
+  }
+
+  /**
+   * The thing up for approval changed: the approvable moves to a new revision of its target. Every
+   * revision is kept. What happens to the approvals already given is the rule's `on_revision`:
+   * DISMISS withdraws them (they were for something else), KEEP lets them stand, marked stale.
+   * Only the requesting side (or an admin) may revise. Parties and impacts stay as frozen at filing.
+   */
+  fun revise(actor: Actor, token: String, revision: String?, context: String?): ActionResult = db.tx { c ->
+    tlcers.touch(c, actor)
+    val r = row(c, token, lock = true)
+    val rule = ruleFor(c, r)
+    val rev = revisionLabel(revision) ?: throw BadRequestException("revision is required: the source service's label for the new version")
+    if (r.dto.approval_state !in LIVE) throw ConflictException("can't revise $token: it is ${r.dto.approval_state}")
+    val mine = if (r.dto.requested_via_service != null) actor.service == r.dto.requested_via_service else actor.name == r.dto.requested_by
+    if (!mine && !actor.admin) forbidden("only ${r.dto.requested_via_service?.let { "service $it" } ?: r.dto.requested_by} (or an admin) may revise $token")
+    if (rev == r.dto.revision) return@tx result(c, token, false, rule)
+    if (revisions(c, r.id).any { it.revision == rev }) throw ConflictException("$token was already at @$rev; a revision is never reused, mint a new one")
+    val now = clock.millis()
+    val seq = r.dto.revision_seq + 1
+    val dismissed = if (rule.on_revision == "DISMISS") c.exec("UPDATE approvals SET unapproved_at_ms = ?, superseded_by_seq = ?, updated_at_ms = ?, version = version + 1 WHERE approvable_id = ? AND active = 1", listOf(now, seq, now, r.id)) else 0
+    c.insert("INSERT INTO approvable_revisions (created_at_ms, approvable_id, seq, revision, context, revised_by, via_service, dismissed) VALUES (?,?,?,?,?,?,?,?)", listOf(now, r.id, seq, rev, context, actor.name, actor.service, dismissed))
+    c.exec("UPDATE approvables SET revision = ?, revision_seq = ?, approval_context = COALESCE(?, approval_context), updated_at_ms = ?, version = version + 1, feed_sync_id = NULL WHERE id = ?", listOf(rev, seq, context, now, r.id))
+    noteRevision(c, r.entityId, rev)
+    val kept = approvals(c, r.id, liveOnly = true).size
+    val effect = when { dismissed > 0 -> "$dismissed approval(s) dismissed"; kept > 0 -> "$kept approval(s) kept from earlier revisions"; else -> "no approvals yet" }
+    val text = "${at(r.dto.revision, r.dto.revision_seq)} -> @$rev by ${actor.name}${context?.let { ": $it" } ?: ""}; $effect (${rule.token} on_revision=${rule.on_revision})"
+    audit(c, r, if (dismissed > 0) LogLevel.WARN else LogLevel.INFO, "revised $text")
+    notify(c, row(c, token), rule, "REVISED", "revised $text")
+    reevaluate(c, r.id, rule, "revised to @$rev")
     result(c, token, true, rule)
   }
 
@@ -753,12 +836,14 @@ class ApprovalStore @Inject constructor(
    * perform it only if `changed` is true. Two racers serialize on the row lock; the loser sees
    * changed=false. Executor must be the requesting side (requester / its service) or an admin.
    */
-  fun execute(actor: Actor, token: String, expectedVersion: Int?): ActionResult = db.tx { c ->
+  fun execute(actor: Actor, token: String, expectedVersion: Int?, revision: String? = null): ActionResult = db.tx { c ->
     tlcers.touch(c, actor)
     val r = row(c, token, lock = true)
     val rule = ruleFor(c, r)
     if (r.dto.approval_state == "EXECUTED") return@tx result(c, token, false, rule)
     if (r.dto.approval_state != "APPROVED") throw ConflictException("can't execute $token: it is ${r.dto.approval_state}, not APPROVED")
+    // What is about to be applied has to be what was approved.
+    revisionLabel(revision)?.let { if (it != r.dto.revision) throw ConflictException("$token is approved at ${at(r.dto.revision, r.dto.revision_seq)}, not @$it") }
     if (expectedVersion != null && expectedVersion != r.dto.version) throw ConflictException("$token is at version ${r.dto.version}, not $expectedVersion")
     val mine = if (r.dto.requested_via_service != null) actor.service == r.dto.requested_via_service else actor.name == r.dto.requested_by
     if (!mine && !actor.admin) forbidden("only ${r.dto.requested_via_service?.let { "service $it" } ?: r.dto.requested_by} (or an admin) may execute $token")
@@ -766,7 +851,7 @@ class ApprovalStore @Inject constructor(
     val ev = evaluate(c, r, rule)
     if (!ev.satisfied) throw ConflictException("can't execute $token: ${ev.summary}")
     setState(c, r.id, "EXECUTED", ", executed_at_ms = ?, executed_by = ?", listOf(clock.millis(), actor.name))
-    audit(c, r, LogLevel.INFO, "APPROVED -> EXECUTED by ${actor.name}")
+    audit(c, r, LogLevel.INFO, "APPROVED -> EXECUTED by ${actor.name}${r.dto.revision?.let { " at @$it" } ?: ""}")
     notify(c, r, rule, "EXECUTED", "executed by ${actor.name}")
     result(c, token, true, rule)
   }
@@ -825,12 +910,13 @@ class Outbox @Inject constructor(private val db: Db, private val clock: Clock) {
 // ================================================================================ actions
 
 data class MembershipList(val memberships: List<MembershipDto>)
-data class RuleReq(val token: String?, val description: String?, val requirement: String?, val min_groups: Int?, val groups: List<RuleGroupDto>?, val aspects: List<RuleAspectDto>? = null, val applies_to: List<String>? = null)
+data class RuleReq(val token: String?, val description: String?, val requirement: String?, val min_groups: Int?, val groups: List<RuleGroupDto>?, val aspects: List<RuleAspectDto>? = null, val applies_to: List<String>? = null, val on_revision: String? = null)
 data class RuleList(val rules: List<RuleDto>)
-data class ApprovableReq(val target: String?, val rule: String?, val context: String?, val client_id: String?, val requested_by: String?, val mode: String? = null, val ttl_seconds: Long? = null, val impacts: List<ImpactReq>? = null)
+data class ApprovableReq(val target: String?, val rule: String?, val context: String?, val client_id: String?, val requested_by: String?, val mode: String? = null, val ttl_seconds: Long? = null, val impacts: List<ImpactReq>? = null, val revision: String? = null)
 data class GroupContacts(val groups: List<GroupContactDto>)
 data class ApprovableList(val approvables: List<ApprovableDto>)
-data class ApproveReq(val comment: String?, val reason: String?, val expected_version: Int?)
+data class ApproveReq(val comment: String?, val reason: String?, val expected_version: Int?, val revision: String? = null)
+data class ReviseReq(val revision: String?, val context: String?)
 data class NotificationList(val notifications: List<NotificationDto>)
 
 class DirectoryActions @Inject constructor(private val directory: Directory) : WebAction {
@@ -853,7 +939,7 @@ class DirectoryActions @Inject constructor(private val directory: Directory) : W
 
 class RuleActions @Inject constructor(private val store: ApprovalStore, private val actors: Actors) : WebAction {
   @Post("/api/approval-rules") @Authenticated(capabilities = [ADMIN]) @RequestContentType(JSON) @ResponseContentType(JSON)
-  fun create(@RequestBody req: RuleReq) = store.createRule(actors.current(), req.token, req.description.required("description"), req.requirement.required("requirement"), req.min_groups, req.groups.orEmpty(), req.aspects.orEmpty(), req.applies_to.orEmpty())
+  fun create(@RequestBody req: RuleReq) = store.createRule(actors.current(), req.token, req.description.required("description"), req.requirement.required("requirement"), req.min_groups, req.groups.orEmpty(), req.aspects.orEmpty(), req.applies_to.orEmpty(), req.on_revision)
 
   @Get("/api/approval-rules") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun list(@QueryParam include_deleted: Boolean?) = RuleList(store.listRules(include_deleted == true))
@@ -863,7 +949,7 @@ class RuleActions @Inject constructor(private val store: ApprovalStore, private 
 
   @Patch("/api/approval-rules/{token}") @Authenticated(capabilities = [ADMIN]) @RequestContentType(JSON) @ResponseContentType(JSON)
   fun update(@PathParam token: String, @QueryParam force: Boolean?, @RequestBody req: RuleReq) =
-    store.updateRule(actors.current(), token, req.description, req.requirement, req.min_groups, req.groups, force == true, req.aspects, req.applies_to)
+    store.updateRule(actors.current(), token, req.description, req.requirement, req.min_groups, req.groups, force == true, req.aspects, req.applies_to, req.on_revision)
 
   @Delete("/api/approval-rules/{token}") @Authenticated(capabilities = [ADMIN]) @ResponseContentType(JSON)
   fun destroy(@PathParam token: String) = store.destroyRule(token)
@@ -871,7 +957,7 @@ class RuleActions @Inject constructor(private val store: ApprovalStore, private 
 
 class ApprovableActions @Inject constructor(private val store: ApprovalStore, private val actors: Actors, private val outbox: Outbox) : WebAction {
   @Post("/api/approvables") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
-  fun create(@RequestBody req: ApprovableReq) = store.create(actors.current(), req.target.required("target"), req.rule.required("rule"), req.context, req.client_id, req.requested_by, req.mode, req.ttl_seconds, req.impacts.orEmpty())
+  fun create(@RequestBody req: ApprovableReq) = store.create(actors.current(), req.target.required("target"), req.rule.required("rule"), req.context, req.client_id, req.requested_by, req.mode, req.ttl_seconds, req.impacts.orEmpty(), req.revision)
 
   @Get("/api/approvables") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun list(@QueryParam target: String?, @QueryParam state: String?, @QueryParam rule: String?, @QueryParam requested_by: String?, @QueryParam awaiting: String?, @QueryParam limit: Int?) =
@@ -881,7 +967,11 @@ class ApprovableActions @Inject constructor(private val store: ApprovalStore, pr
   fun get(@PathParam token: String) = store.get(token, actors.current())
 
   @Post("/api/approvables/{token}/approve") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
-  fun approve(@PathParam token: String, @RequestBody req: ApproveReq) = store.approve(actors.current(), token, req.comment)
+  fun approve(@PathParam token: String, @RequestBody req: ApproveReq) = store.approve(actors.current(), token, req.comment, req.revision)
+
+  /** The target changed: move the approvable to a new revision of it. */
+  @Post("/api/approvables/{token}/revise") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
+  fun revise(@PathParam token: String, @RequestBody req: ReviseReq) = store.revise(actors.current(), token, req.revision, req.context)
 
   @Post("/api/approvables/{token}/unapprove") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun unapprove(@PathParam token: String) = store.unapprove(actors.current(), token)
@@ -890,7 +980,7 @@ class ApprovableActions @Inject constructor(private val store: ApprovalStore, pr
   fun decline(@PathParam token: String, @RequestBody req: ApproveReq) = store.decline(actors.current(), token, req.reason ?: req.comment)
 
   @Post("/api/approvables/{token}/execute") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
-  fun execute(@PathParam token: String, @RequestBody req: ApproveReq) = store.execute(actors.current(), token, req.expected_version)
+  fun execute(@PathParam token: String, @RequestBody req: ApproveReq) = store.execute(actors.current(), token, req.expected_version, req.revision)
 
   @Get("/api/notifications") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun notifications(@QueryParam approvable: String?, @QueryParam status: String?, @QueryParam limit: Int?) = NotificationList(outbox.list(approvable, status, limitOf(limit)))

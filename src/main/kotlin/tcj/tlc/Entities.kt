@@ -53,6 +53,8 @@ data class EntityDto(
   val updated_at: String,
   val deleted_at: String?,
   val version: Int,
+  /** The latest revision of the record that TLC has been told about (by an approvable being filed or revised). */
+  val revision: String? = null,
 )
 
 /**
@@ -94,7 +96,7 @@ class EntityStore @Inject constructor(
       rs.getString("token"), "${rs.getString("source_service")}/${rs.getString("source_entity")}/$sid", rs.getString("type_token"),
       rs.getString("source_service"), rs.getString("source_entity"), sid, rs.getString("display_name"),
       rs.getString("url_template")?.replace("{id}", sid), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")),
-      rs.isoOrNull("deleted_at_ms"), rs.getInt("version"),
+      rs.isoOrNull("deleted_at_ms"), rs.getInt("version"), rs.getString("revision"),
     )
   }
 

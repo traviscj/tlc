@@ -51,7 +51,7 @@ class TlcServiceTest {
     // MiskTestingServiceModule pins the clock (to 2018); the scenarios below are written against late 2026.
     clock.setNow(java.time.Instant.parse("2026-11-10T12:00:00Z"))
     db.tx { c ->
-      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts")) c.exec("DELETE FROM $t")
+      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions")) c.exec("DELETE FROM $t")
     }
     post("/api/entity-types", mapOf("source_service" to "sentinel", "source_entity" to "proposed_changes", "url_template" to "https://sentinel.example/pc/{id}"))
   }
@@ -376,6 +376,66 @@ class TlcServiceTest {
       "approval requested by alice under AR-1 (ANY_NON_SELF_APPROVAL)", "approved by bob",
       "PENDING -> APPROVED (approval by bob; approved by bob)", "APPROVED -> EXECUTED by alice",
     )
+  }
+
+  @Test
+  fun `a revised approvable dismisses or keeps approvals as its rule says, and only the approved revision executes`() {
+    member("eng", "bob"); member("risk", "carol")
+    rule("AR-D", "ALL_GROUPS", listOf(grp("ENG", "eng"), grp("RISK", "risk")))
+    ok(post("/api/approval-rules", mapOf("token" to "AR-K", "description" to "keep", "requirement" to "ANY_NON_SELF_APPROVAL", "on_revision" to "KEEP"), "root"))
+    assertThat(post("/api/approval-rules", mapOf("token" to "AR-X", "description" to "x", "requirement" to "ANY_APPROVAL", "on_revision" to "SOMETIMES"), "root").code).isEqualTo(400)
+    assertThat(ok(get("/api/approval-rules/AR-D"))["on_revision"]).isEqualTo("DISMISS")
+
+    val ap = request("$pc/40", "AR-D", extra = mapOf("revision" to "3"))
+    assertThat(ok(get("/api/approvables/$ap")).obj("approvable")["revision"]).isEqualTo("3")
+    assertThat(ok(get("/api/entities/get?target=$pc/40"))["revision"]).isEqualTo("3")
+    ok(post("/api/approvables/$ap/approve", user = "bob"))
+    assertThat(post("/api/approvables/$ap/approve", mapOf("revision" to "2"), "carol").code).isEqualTo(409) // carol read @2
+    ok(post("/api/approvables/$ap/approve", mapOf("revision" to "3"), "carol"))
+    assertThat(state(ap)).isEqualTo("APPROVED")
+
+    assertThat(post("/api/approvables/$ap/revise", mapOf("revision" to "4"), "bob").code).isEqualTo(403) // not the requesting side
+    assertThat(post("/api/approvables/$ap/revise", mapOf("context" to "no label")).code).isEqualTo(400)
+    val r = ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4", "context" to "threshold 20 -> 16")))
+    assertThat(r["changed"]).isEqualTo(true)
+    assertThat(r.obj("approvable")["approval_state"]).isEqualTo("PENDING")
+    assertThat(r.obj("approvable")["revision"]).isEqualTo("4")
+    assertThat(r.obj("approvable")["approval_context"]).isEqualTo("threshold 20 -> 16")
+    assertThat(ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4")))["changed"]).isEqualTo(false)
+    assertThat(post("/api/approvables/$ap/revise", mapOf("revision" to "3")).code).isEqualTo(409) // never reused
+    val v = ok(get("/api/approvables/$ap"))
+    assertThat(v.list("revisions").map { it["revision"] }).containsExactly("3", "4")
+    assertThat(v.list("revisions").map { it["context"] }).containsExactly("because", "threshold 20 -> 16")
+    assertThat(v.list("revisions")[1]["dismissed"]).isEqualTo(2.0)
+    assertThat(v.list("approvals").map { it["superseded"] }).containsExactly(true, true)
+    assertThat(v.list("approvals").map { it["revision"] }).containsExactly("3", "3")
+    assertThat(ok(get("/api/entities/get?target=$pc/40"))["revision"]).isEqualTo("4")
+
+    ok(post("/api/approvables/$ap/approve", user = "bob")); ok(post("/api/approvables/$ap/approve", user = "carol"))
+    assertThat(post("/api/approvables/$ap/execute", mapOf("revision" to "3")).code).isEqualTo(409) // about to apply what nobody approved
+    assertThat(ok(post("/api/approvables/$ap/execute", mapOf("revision" to "4")))["changed"]).isEqualTo(true)
+    assertThat(post("/api/approvables/$ap/revise", mapOf("revision" to "5")).code).isEqualTo(409) // terminal
+
+    val audit = ok(get("/api/logs?target=$pc/40&source=tlc.approvals&order=asc")).list("entries").map { (it["message"] as String).substringAfter(": ") }
+    assertThat(audit).contains(
+      "approval requested by alice for @3 under AR-D (ALL_GROUPS)",
+      "revised @3 -> @4 by alice: threshold 20 -> 16; 2 approval(s) dismissed (AR-D on_revision=DISMISS)",
+      "APPROVED -> PENDING (revised to @4; 0 of 2 needed groups approved; still open: ENG, RISK)",
+      "APPROVED -> EXECUTED by alice at @4",
+    )
+
+    // KEEP: the approval stands, visibly given at the earlier revision. Labels are opaque; an unlabelled approvable can gain one.
+    val k = request("$pc/41", "AR-K")
+    ok(post("/api/approvables/$k/approve", user = "bob"))
+    val rk = ok(post("/api/approvables/$k/revise", mapOf("revision" to "c3d4e5f")))
+    assertThat(rk.obj("approvable")["approval_state"]).isEqualTo("APPROVED")
+    assertThat(rk.obj("approvable")["revision_seq"]).isEqualTo(2.0)
+    val kept = ok(get("/api/approvables/$k")).list("approvals").single()
+    assertThat(kept["stale"]).isEqualTo(true)
+    assertThat(kept["superseded"]).isEqualTo(false)
+    assertThat(kept["revision_seq"]).isEqualTo(1.0)
+    // changing what a revision does is a policy change like any other
+    assertThat(call("PATCH", "/api/approval-rules/AR-K", mapOf("on_revision" to "DISMISS"), "root").code).isEqualTo(409)
   }
 
   @Test
