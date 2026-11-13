@@ -148,7 +148,7 @@ const TLC = (() => {
       if (!d) { root.innerHTML = `<div class=dim>loading ${esc(st.target)}…</div><div class=err>${esc(st.err)}</div>`; return; }
       const e = d.sum.entity;
       const head = `<div class=row><span class="b info">${esc(d.sum.target)}</span>${e ? `<span>${esc(e.display_name || '')}</span><span class=dim>${esc(e.token)} v${e.version}</span>${e.url ? `<a href="${esc(e.url)}" target=_blank rel=noopener>source ↗</a>` : ''}${e.deleted_at ? '<span class=bad>destroyed</span>' : ''}` : '<span class=warn>not yet known to TLC (first write creates it)</span>'}</div>`;
-      root.innerHTML = head + `<div class=err>${esc(st.err)}</div>` + (has('ownership') ? ownership(d) : '') + (has('approvals') ? approvals(d) : '') + (has('tags') ? tags(d) : '') + (has('comments') ? comments(d) : '') + (has('logs') ? logs(d) : '');
+      root.innerHTML = head + `<div class=err>${esc(st.err)}</div>` + [['ownership', ownership], ['approvals', approvals], ['tags', tags], ['comments', comments], ['logs', logs]].filter(([p]) => has(p)).map(([p, f]) => `<section data-panel=${p}>${f(d)}</section>`).join('');
       opts.onrender && opts.onrender();
     }
 
