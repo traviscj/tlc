@@ -4,6 +4,8 @@ A **tag** is a name with an effectivity window. A **tagging** is one immutable o
 `ADD` or `REMOVE`, of a tag on a target, effective at some instant, by some ldap and/or service.
 Nothing in `taggings` is ever updated or deleted.
 
+![tags panel: current tags with since/by, then the last operations](img/tags.png)
+
 ## State is a query
 
 > target X carries tag G at instant *t* ⇔ the last operation on (X, G) with `effective_at ≤ t`
@@ -38,7 +40,7 @@ Intervals are half-open `[from, to)`: at the instant of a `REMOVE` the target is
   and queryable. `POST /api/tags` on a retired name un-retires it. ADDs effective before the tag's
   own `effective_at` are refused too (a tag auto-created by a backdated ADD starts at that ADD).
 - **Names** are lower-cased and must match `[a-z0-9][a-z0-9_.:-]{0,95}` (`risk:tr`, `q4-freeze-exempt`).
-- **ldap and service** are separate columns, as in the note. A human through the UI sets `ldap`; a
+- **ldap and service** are separate columns, as in the note. A person or agent through the UI or CLI sets `ldap`; a
   service sets `service`; a service acting for a user sets both.
 - **Concurrency.** Each operation locks its tag row, so check-then-insert can't interleave for one tag.
 - **Feed.** Every op is published on the `taggings` feed, sharded by target.

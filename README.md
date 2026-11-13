@@ -4,8 +4,15 @@
 
 One small service that gives *other* services the cross-cutting stuff they keep re-building badly:
 tag a row, hang a log on it, discuss it, say who owns which aspect of it, and gate a change to it on
-an approval rule. The source
-service keeps its own tables; TLC only ever learns the triple `service/entity/id`.
+an approval rule: some people (or agents) agreeing, some automated checks passing, about one
+specific revision of the row. The source service keeps its own tables; TLC only ever learns the
+triple `service/entity/id` and, for approvals, which version (`…/1234@3`).
+
+What a rule requires is the deploying team's policy, not TLC's. The rules in these docs are examples.
+
+![the per-record widget: ownership, approvals at a revision with checks, tags, comments, logs](docs/img/iframe.png)
+
+More of the UI, panel by panel: [approvals](docs/approvals.md) · [comments](docs/comments.md) · [ownership](docs/ownership.md) · [console](docs/embedding.md).
 
 Kotlin + [misk](https://github.com/cashapp/misk), raw SQL over misk-jdbc, MySQL. JSON over HTTP.
 Port **8790**. Built from a one-page note, [`docs/2020_scribble.md`](docs/2020_scribble.md), taken in 2020 while
@@ -26,7 +33,7 @@ flowchart LR
   TLC -- "iframe src=/iframe?target=…" --> sentinel
   TLC -- "/_feeds/fetch/approvables<br/>APPROVED → claim + apply<br/>REVERTED → undo" --> sentinel
   TLC --> outbox --> slack["Slack / log"]
-  humans["humans: console, iframe, tlc CLI"] --> TLC
+  humans["people and agents: console, iframe, tlc CLI"] --> TLC
 ```
 
 ## Run it
@@ -58,7 +65,7 @@ curl $H "$U/api/taggings/is-tagged?target=$E&tag=urgent"                       #
 curl $H "$U/api/taggings/is-tagged?target=$E&tag=urgent&at=2026-01-15T00:00:00Z" # was tagged (then)
 curl $H $U/api/logs          -d "{\"target\":\"$E\",\"level\":\"WARN\",\"message\":\"backtest sample small\"}"
 curl $H $U/api/threads       -d "{\"target\":\"$E\",\"title\":\"is 20 right?\"}"
-curl $H $U/api/approvables   -d "{\"target\":\"$E\",\"rule\":\"AR-6392\",\"context\":\"12 -> 20\"}"
+curl $H $U/api/approvables   -d "{\"target\":\"$E\",\"revision\":\"3\",\"rule\":\"AR-6392\",\"context\":\"12 -> 20\"}"  # approve 1234@3
 curl $H "$U/api/summary?target=$E"                                             # everything about it
 ```
 
@@ -68,7 +75,9 @@ Same thing through the CLI (`scripts/tlc --help`); both verb sets from the note 
 tlc thread mk "is 20 right?" --target $E      # == tlc thread create …
 tlc comment ls T-…  |  tlc comment edit C-… "…"  |  tlc comment rm C-…  |  tlc comment like C-…
 tlc tag is $E urgent && echo tagged           # exit status is the answer
-tlc ap approve AP-… ; tlc ap execute AP-…     # execute exits 3 if someone else already claimed it
+tlc ap approve AP-… --rev 3 ; tlc ap execute AP-… --rev 3   # execute exits 3 if someone else already claimed it
+tlc ap revise AP-… --rev 4 --context "12 -> 16"   # the change was edited: approvals of @3 are dismissed (or kept, per rule)
+tlc --service sentinel ap check AP-… flag_rate_delta_pct --value -6.2   # a machine's assertion; the rule holds the bound
 ```
 
 ## Ownership (added after the note)
@@ -106,6 +115,7 @@ The note is [`docs/2020_scribble.md`](docs/2020_scribble.md), kept as written.
 | approvable, approvals, approval rule, rules→groups | `Approvals.kt`, `v010`–`v015` | [approvals](docs/approvals.md) |
 | "alternatives to approval": Slack / email notification | `SLACK_NOTIFICATION` / `EMAIL_NOTIFICATION` requirements + outbox | [approvals](docs/approvals.md#notifications) |
 | "+ feed", "fsi, shard" | `Feeds.kt`, `/_feeds/fetch/{taggings,threads,comments,approvables,ownerships}` | [feeds](docs/feeds.md) |
+| *(not in the note)* revisions of what is approved, comments per revision, automated checks, agents as approvers, a configurable requirement menu | `Approvals.kt`, `Comments.kt`, `v028`–`v040` | [approvals](docs/approvals.md) · [comments](docs/comments.md#on-a-request-and-at-a-revision) |
 | *(not in the note)* ownership per aspect, coverage, dependency edges, aspect-resolved rules, break-glass | `Ownership.kt`, `Approvals.kt`, `v017`–`v023` | [ownership](docs/ownership.md) |
 
 Every endpoint: [docs/api.md](docs/api.md). Config, auth, deploy notes: [docs/operations.md](docs/operations.md).
@@ -126,8 +136,6 @@ Every endpoint: [docs/api.md](docs/api.md). Config, auth, deploy notes: [docs/op
 | `/demo` in a browser | a "sentinel" page embedding the iframe; switch the viewer between alice/bob/carol |
 | `scripts/ui_smoke.py` | Playwright click-through of the iframe and console (optional; needs Playwright) |
 
-![the iframe widget](docs/img/iframe.png)
-
 ## Layout
 
 ```
@@ -135,14 +143,18 @@ src/main/kotlin/tcj/tlc/   TlcApp TlcModule TlcConfig · Db (tx + SQL helpers) �
                            Entities · Tags · Logs · Comments · Approvals (directory, rules, engine, approvables, outbox)
                            Ownership (claims, cells, coverage, edges, party resolution)
                            Feeds (publisher, transport, background loop) · Web (pages, /api/info, /api/summary)
-src/main/resources/        migrations/v001…v023 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
+src/main/resources/        migrations/v001…v040 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
 src/test/kotlin/tcj/tlc/   TlcServiceTest (HTTP + MySQL) · ApprovalEngineTest
-scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-restart.sh · ui_smoke.py
+scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-restart.sh · ui_smoke.py · ui_shots.py
 ```
 
 ## Not done (on purpose, so far)
 
 - **Real auth and a real group directory.** Headers are trusted; `directory_memberships` is a local stand-in for the company directory (Okta, Google Groups, LDAP).
+- **Running checks, waiving them, timing them out.** TLC records what a service reports and compares it with the rule's bound; it computes nothing, a failed check cannot be waived, and one that never reports stays `MISSING`.
+- **Requirement types beyond the seven shipped** (k-of-one-group, weighted, veto, staged, expiring): see the menu in `docs/approvals.md`.
+- **Re-resolving who is asked when a request is revised.** Parties and impacts are frozen at filing; decline and refile.
+- **Agent identity from the IdP.** "Is an agent" comes from TLC's own `agents` table.
 - **Email transport.** EMAIL notifications land in the outbox and the service log, nothing is sent. Slack sends only if `slack_webhook_url` is set (never exercised against real Slack).
 - **Retention / hard delete.** Everything is soft-deleted or append-only; logs grow forever.
 - **The dependency graph is hand-fed.** Nothing syncs edges from a real rule engine; `POST /api/edges` is the integration point. Edges are current-state only.

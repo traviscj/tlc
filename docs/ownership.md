@@ -17,6 +17,8 @@ ownership = (target, aspect, owner, role, effective interval)      owner = a dir
 | **target** | `service/entity/id`, or `service/entity/*` for a type-wide default |
 | **the invariant** | at most one `OWNER` per (record, aspect) at any instant |
 
+![ownership panel on ATO_VELOCITY: one row per aspect, status, owner, stakeholders, what the aspect means](img/ownership-panel.png)
+
 Code: `Ownership.kt` · tables `ownerships`, `ownership_aspects`, `entity_edges` · demo
 `scripts/demos/08-ownership.sh` · CLI `tlc own …`, `tlc edge …`.
 
@@ -44,7 +46,7 @@ A *cell* is one (record, aspect).
 - `POST /api/ownership/transfer {target, aspect, from, to}` = RELEASE + CLAIM at one instant: no
   moment with zero or two owners. The **giver** does it.
 
-**Who may write.** A human may claim / release only for a group they are in. Admins and service
+**Who may write.** A person (or an agent) may claim / release only for a group they are in. Admins and service
 callers (a source of truth syncing in) may speak for any group. Consequence worth knowing: on an
 UNOWNED cell, the first group to claim it owns it. That is the squishiness being modelled; the
 claim is in the log and on the `ownerships` feed.
@@ -108,6 +110,9 @@ returns every node with its cells plus the distinct parties: who is on the hook 
 Ownership says who holds each aspect of a record. It does not say who decides, because that depends
 on **what is being done** to the record. Detaching a hook, disabling a rule and changing a threshold
 all touch the same rule and need different people:
+
+The table is the example company's answer, to show the shape. Which aspects consent to which action
+is exactly what differs between teams and over time, and is why it lives in rules rather than code.
 
 | action (one rule each) | `availability` | `disposition` | `efficacy` |
 |---|---|---|---|
@@ -214,6 +219,8 @@ POST /api/approvables   (X-TLC-Service: sentinel)
              {"aspect": "efficacy", "magnitude": null}]}
 ```
 
+![approvals panel on VEL_2: availability and disposition declared under their thresholds, so told not asked; efficacy unknown, so asked](img/impacts.png)
+
 For each rule aspect, with `m` the declared magnitude and `T` the rule's `threshold`:
 
 | declared | rule aspect is CONSENT | rule aspect is NOTIFY |
@@ -232,7 +239,7 @@ For each rule aspect, with `m` the declared magnitude and `T` the rule's `thresh
   wrong declaration is visible to exactly the group it bypassed.
 - **Units must match** when the rule aspect names one: a 400, not a silent comparison of
   flags/hour against flags/day.
-- **Only a service caller may declare impacts** (400 for a human). The declaration picks the
+- **Only a service caller may declare impacts** (400 for a person or an agent). The declaration picks the
   approvers; it has to come from the system that computed it, the same way only a service may set
   `requested_by`.
 - **If nobody is left to ask**, the approvable is APPROVED at filing (RATIFIED, for break-glass),
@@ -244,6 +251,12 @@ For each rule aspect, with `m` the declared magnitude and `T` the rule's `thresh
   at WARN when anything was demoted.
 - A group that owns two aspects, one demoted and one not, is still asked. A CONTESTED aspect below
   its threshold tells every claimant and asks none.
+
+The thresholds (0, 50 flags/day) are the example's. Where the line sits, and whether an aspect has
+one at all, is per rule and expected to be tuned.
+
+Impacts choose who is asked, once, at filing. For conditions that must hold for the change to pass
+at all, measured per revision, a rule uses [checks](approvals.md#checks-what-machines-assert).
 
 Limits: the magnitude is one number per aspect, in whatever unit the service and the rule agree on;
 TLC does not compute, check or backfill it. With `MIN_GROUPS`, demotion can leave fewer groups than
@@ -263,6 +276,11 @@ stateDiagram-v2
   ACTED --> RATIFIED: rule satisfied (it stands)
   ACTED --> REVERTED: TTL, or pulled back (the source service undoes it)
 ```
+
+![approvals panel on velocity_24h: ACTED, already done, reverts unless ratified](img/break-glass.png)
+
+Who may pull, for how long, and who may revert are the shipped behaviour, described below. Which
+actions get a break-glass rule at all is the deploying team's call.
 
 - **Who may pull it**: a member of a group that owns any aspect of the target *or of anything built
   on it* (or one of the rule's groups, or an admin). Anyone else gets a 403 listing those groups.
