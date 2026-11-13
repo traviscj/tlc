@@ -12,13 +12,21 @@ Port **8790**. Built from a one-page note, [`docs/2020_scribble.md`](docs/2020_s
 riskarbiter2020 was being implemented and its approvals needed to be more flexible than they were;
 [`docs/decisions.md`](docs/decisions.md) records how each line of it was read.
 
-```
-sentinel ──tag/log/comment/request──▶ ┌──────────── TLC ─────────────┐
-   ▲   <iframe src=/iframe?target=…> │ entities  tags  logs         │──▶ outbox ─▶ Slack / log
-   └────── /_feeds/fetch/approvables │ threads·comments·likes       │
-           (APPROVED → claim+apply)  │ rules·groups·approvables     │◀── humans: console, iframe, `tlc` CLI
-           (REVERTED → undo)         │ ownership·aspects·edges      │
-                                     └──────────────────────────────┘
+```mermaid
+flowchart LR
+  sentinel["sentinel<br/>(a source service)"]
+  subgraph TLC
+    direction TB
+    t1["entities · tags · logs"]
+    t2["threads · comments · likes"]
+    t3["rules · groups · approvables"]
+    t4["ownership · aspects · edges"]
+  end
+  sentinel -- "tag / log / comment / request" --> TLC
+  TLC -- "iframe src=/iframe?target=…" --> sentinel
+  TLC -- "/_feeds/fetch/approvables<br/>APPROVED → claim + apply<br/>REVERTED → undo" --> sentinel
+  TLC --> outbox --> slack["Slack / log"]
+  humans["humans: console, iframe, tlc CLI"] --> TLC
 ```
 
 ## Run it

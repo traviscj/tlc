@@ -89,7 +89,11 @@ claim would turn every other record of the type into a gap.
 
 ```
 POST /api/edges {from, to, kind?}        from ──▶ to   "to is built on from"
-signal ──FEEDS──▶ rule ──TRIGGERS──▶ trigger ──HOOKS──▶ hook
+```
+
+```mermaid
+flowchart LR
+  signal -- FEEDS --> rule -- TRIGGERS --> trigger -- HOOKS --> hook
 ```
 
 Source services push the edges they know; TLC mirrors, it is not the master. Edges are
@@ -251,8 +255,13 @@ For "it is breaking now": act first on something reversible, ask after.
 
 ```
 POST /api/approvables {target, rule, mode: "RATIFY", context, ttl_seconds?}
-ACTED ──rule satisfied──▶ RATIFIED          (it stands)
-  └────TTL, or pulled back──▶ REVERTED      (the source service undoes it)
+```
+
+```mermaid
+stateDiagram-v2
+  direction LR
+  ACTED --> RATIFIED: rule satisfied (it stands)
+  ACTED --> REVERTED: TTL, or pulled back (the source service undoes it)
 ```
 
 - **Who may pull it**: a member of a group that owns any aspect of the target *or of anything built
