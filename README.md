@@ -114,15 +114,15 @@ Every endpoint: [docs/api.md](docs/api.md). Config, auth, deploy notes: [docs/op
 
 | script | shows |
 |---|---|
-| `scripts/demos/01-entities.sh` | unregistered types refused; records vivify; soft destroy + revive |
-| `scripts/demos/02-tags.sh` | idempotent tag/untag; backdating; was-tagged windows; `known_at`; retiring a tag; tagging a thread |
-| `scripts/demos/03-logs.sh` | append/batch; level, source-prefix, substring filters; TLC's own audit entries; tail |
-| `scripts/demos/04-comments.sh` | nested replies in path order; like episodes; author-only edit; tombstones |
-| `scripts/demos/05-approvals.sh` | every requirement type; the distinct-people matching; withdraw; admins-only; notify-only; decline; service-on-behalf-of; forced rule change; outbox; audit trail |
-| `scripts/demos/06-feeds.sh` | a source service tailing `approvables` and claiming APPROVED changes exactly once |
-| `scripts/demos/07-curl.sh` | the whole flow in bare curl against a second service (`billing/invoices`) |
-| `scripts/demos/08-ownership.sh` | aspects; type defaults; CONTESTED; time travel; coverage + gaps; blast radius over the graph; rules that resolve approvers from owners; `applies_to`; declared impacts vs thresholds; break-glass ratified and reverted |
-| `scripts/demos/09-revisions-checks-agents.sh` | a request pinned to `…@3`; checks with the bound on the rule; discussion on the request; revise to `@4` dismissing approvals; execute only the approved revision; a second rule that keeps approvals and admits agents |
+| `scripts/demos/01-entities.sh` | unregistered types refused; records vivify; soft destroy + revive · [recording](docs/recordings/01-entities.mp4) |
+| `scripts/demos/02-tags.sh` | idempotent tag/untag; backdating; was-tagged windows; `known_at`; retiring a tag; tagging a thread · [recording](docs/recordings/02-tags.mp4) |
+| `scripts/demos/03-logs.sh` | append/batch; level, source-prefix, substring filters; TLC's own audit entries; tail · [recording](docs/recordings/03-logs.mp4) |
+| `scripts/demos/04-comments.sh` | nested replies in path order; like episodes; author-only edit; tombstones · [recording](docs/recordings/04-comments.mp4) |
+| `scripts/demos/05-approvals.sh` | every requirement type; the distinct-people matching; withdraw; admins-only; notify-only; decline; service-on-behalf-of; forced rule change; outbox; audit trail · [recording](docs/recordings/05-approvals.mp4) |
+| `scripts/demos/06-feeds.sh` | a source service tailing `approvables` and claiming APPROVED changes exactly once · [recording](docs/recordings/06-feeds.mp4) |
+| `scripts/demos/07-curl.sh` | the whole flow in bare curl against a second service (`billing/invoices`) · [recording](docs/recordings/07-curl.mp4) |
+| `scripts/demos/08-ownership.sh` | aspects; type defaults; CONTESTED; time travel; coverage + gaps; blast radius over the graph; rules that resolve approvers from owners; `applies_to`; declared impacts vs thresholds; break-glass ratified and reverted · [recording](docs/recordings/08-ownership.mp4) |
+| `scripts/demos/09-revisions-checks-agents.sh` | a request pinned to `…@3`; checks with the bound on the rule; discussion on the request; revise to `@4` dismissing approvals; execute only the approved revision; a second rule that keeps approvals and admits agents · [recording](docs/recordings/09-revisions-checks-agents.mp4) |
 | `/demo` in a browser | a "sentinel" page embedding the iframe; switch the viewer between alice/bob/carol |
 | `scripts/ui_smoke.py` | Playwright click-through of the iframe and console (optional; needs Playwright) |
 
