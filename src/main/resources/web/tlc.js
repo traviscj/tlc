@@ -118,16 +118,16 @@ const TLC = (() => {
       if (st.edit === c.comment_token) return `<div class=cm style="margin-left:${c.depth * 14}px"><form class=row data-form=edit data-id="${c.comment_token}"><input class=g name=content value="${esc(c.content)}"><button>save</button><button type=button data-act=cancel>cancel</button></form></div>`;
       const dead = !!c.deleted_at, own = c.author === user;
       return `<div class=cm style="margin-left:${c.depth * 14}px"><div class=hd><span class="${dead ? 'dim' : 'acc'}">${esc(c.author)}</span> ${ts(c.commented_at)} <span class=dim>${age(c.commented_at)}${c.edited_at ? ' · edited' : ''}</span> ${c.likes ? `<span class=warn>♥${c.likes}</span>` : ''}
-        ${dead ? '' : `<a href=# data-act=${c.liked_by_me ? 'unlike' : 'like'} data-id="${c.comment_token}">${c.liked_by_me ? 'unlike' : 'like'}</a> <a href=# data-act=reply data-id="${c.comment_token}">reply</a>${own ? ` <a href=# data-act=edit data-id="${c.comment_token}">edit</a> <a href=# data-act=rm data-id="${c.comment_token}">rm</a>` : ''}`} <span class=dim>${esc(c.comment_token)}</span></div>
+        ${c.revision ? `<span class=dim title="written when the target was at revision ${esc(c.revision)}">@${esc(c.revision)}</span>` : ''} ${dead ? '' : `<a href=# data-act=${c.liked_by_me ? 'unlike' : 'like'} data-id="${c.comment_token}">${c.liked_by_me ? 'unlike' : 'like'}</a> <a href=# data-act=reply data-id="${c.comment_token}">reply</a>${own ? ` <a href=# data-act=edit data-id="${c.comment_token}">edit</a> <a href=# data-act=rm data-id="${c.comment_token}">rm</a>` : ''}`} <span class=dim>${esc(c.comment_token)}</span></div>
         <div class="tx ${dead ? 'dim' : ''}">${dead ? '[deleted]' : esc(c.content)}</div>
         ${st.reply === c.comment_token ? `<form class=row data-form=comment data-parent="${c.comment_token}"><input class=g name=content placeholder="reply to ${esc(c.author)}"><button>reply</button><button type=button data-act=cancel>cancel</button></form>` : ''}</div>`;
     }
 
     function comments(d) {
-      const list = table([['thread', r => `<span class="${r.token === st.open ? 'info b' : ''}">${esc(r.title)}</span>`], ['by', r => esc(r.creator)], ['n', r => r.cached_comments, 'n'], ['last', r => ts(r.last_comment_at || r.created_at)], ['age', r => age(r.last_comment_at || r.created_at), 'n'], ['token', r => `<span class=dim>${esc(r.token)}</span>`]], d.sum.threads, {go: r => 'thread:' + r.token, cls: r => r.token === st.open ? 'sel' : '', empty: 'no threads'});
+      const list = table([['thread', r => `<span class="${r.token === st.open ? 'info b' : ''}">${esc(r.title)}</span>`], ['on', r => (r.target && r.target.startsWith('AP-') ? `<span class=acc title="on the approval request">${esc(r.target)}</span>` : '<span class=dim>record</span>') + (r.revision ? `<span class=info>@${esc(r.revision)}</span>` : '')], ['by', r => esc(r.creator)], ['n', r => r.cached_comments, 'n'], ['last', r => ts(r.last_comment_at || r.created_at)], ['age', r => age(r.last_comment_at || r.created_at), 'n'], ['token', r => `<span class=dim>${esc(r.token)}</span>`]], d.sum.threads, {go: r => 'thread:' + r.token, cls: r => r.token === st.open ? 'sel' : '', empty: 'no threads'});
       const t = d.thread;
       const body = t ? `<div class=cm><div class=tx>${esc(t.thread.body || '')}</div>${t.comments.map(comment).join('')}<form class=row data-form=comment><input class=g name=content placeholder="comment on “${esc(t.thread.title)}”"><button>comment</button></form></div>` : '';
-      return `<h2>comments <small>${d.sum.threads.length} threads · ${d.sum.threads.reduce((a, x) => a + x.cached_comments, 0)} comments</small></h2>${list}${body}<form class=row data-form=thread><input name=title placeholder="new thread title" size=28><input class=g name=body placeholder="body (optional)"><button>open thread</button></form>`;
+      return `<h2>comments <small>${d.sum.threads.length} threads · ${d.sum.threads.reduce((a, x) => a + x.cached_comments, 0)} comments</small></h2>${list}${body}<form class=row data-form=thread><select name=on title="what the thread is about"><option value="">on the record</option>${d.views.map(v => `<option value="${esc(v.approvable.token)}">on ${esc(v.approvable.token)}${v.approvable.revision ? '@' + esc(v.approvable.revision) : ''}</option>`).join('')}</select><input name=title placeholder="new thread title" size=28><input class=g name=body placeholder="body (optional)"><button>open thread</button></form>`;
     }
 
     function logs(d) {
@@ -193,7 +193,7 @@ const TLC = (() => {
         tag: () => v.tag && api('POST', '/api/taggings/tag', {target: t, tag: v.tag, effective_at: v.at || undefined, create_tag: true}),
         request: () => api('POST', '/api/approvables', {target: t, rule: v.rule, context: v.context || undefined, mode: v.ratify ? 'RATIFY' : undefined}),
         claim: () => v.aspect && v.owner && api('POST', '/api/ownership/claim', {target: t, aspect: v.aspect, owner: v.owner, role: v.role}),
-        thread: () => v.title && api('POST', '/api/threads', {target: t, title: v.title, body: v.body || undefined}).then(r => { st.open = r.token; }),
+        thread: () => v.title && api('POST', '/api/threads', {target: v.on || t, title: v.title, body: v.body || undefined}).then(r => { st.open = r.token; }),
         comment: () => v.content && api('POST', '/api/comments', {thread: st.open, parent_comment: f.dataset.parent, content: v.content}).then(() => { st.reply = null; }),
         edit: () => api('PATCH', `/api/comments/${f.dataset.id}`, {content: v.content}).then(() => { st.edit = null; }),
       }[f.dataset.form];

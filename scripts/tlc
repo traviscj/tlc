@@ -12,7 +12,7 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
   tlc tag add TARGET TAG [--at ISO] | remove TARGET TAG | is TARGET TAG [--at ISO] [--known-at ISO]
   tlc tag was TARGET TAG [--from ISO --to ISO] | of TARGET | targets TAG | log [--target T] [--tag G]
   tlc log add TARGET MESSAGE [--level WARN] [--source S] | ls [--target T --level L --source S -q TEXT] | tail [--target T]
-  tlc thread mk TITLE [--body B] [--target T] | ls [--target T] | show T-… | edit T-… [--title --body] | rm T-…
+  tlc thread mk TITLE [--body B] [--target T|AP-…] [--rev R] | ls [--target T] | show T-… | edit T-… [--title --body] | rm T-…
   tlc comment mk T-… CONTENT [--parent C-…] | ls T-… | show C-… | edit C-… CONTENT | rm C-… | like C-… | unlike C-… | likes C-…
   tlc group add GROUP LDAP [--admin] | rm GROUP LDAP | ls | contact GROUP [--slack '#chan'] [--email a@b] | contacts
   tlc rule mk --requirement R --desc D [--token AR-…] [--min N] [--on-revision DISMISS|KEEP] [--group ENG:trust-infra[:admins][:#chan][:a@b]]…
@@ -167,8 +167,8 @@ def n_log(v):
 
 
 def n_thread(v):
-    cols = ["token", "title", "creator", "n=cached_comments", "target", "last=last_comment_at", "created_at"]
-    if v == "mk": emit(call("POST", "/api/threads", {"title": need(1, "thread mk TITLE"), "body": A.body, "target": A.target}), None, cols)
+    cols = ["token", "title", "creator", "n=cached_comments", "target", "rev=revision", "last=last_comment_at", "created_at"]
+    if v == "mk": emit(call("POST", "/api/threads", {"title": need(1, "thread mk TITLE"), "body": A.body, "target": A.target, "revision": A.rev}), None, cols)
     elif v == "ls": emit(call("GET", "/api/threads", target=A.target, creator=A.creator, limit=A.limit), "threads", cols)
     elif v == "show":
         r = call("GET", "/api/threads/" + need(1, "thread show T-…"))

@@ -36,6 +36,8 @@ data class ThreadDto(
   val version: Int,
   val feed_sync_id: Long?,
   val shard: Int,
+  /** The revision the target was at when the thread was opened (`…/1234@3`, `AP-…@3`); null if TLC knew of none. */
+  val revision: String? = null,
 )
 
 data class CommentDto(
@@ -56,6 +58,8 @@ data class CommentDto(
   val version: Int,
   val feed_sync_id: Long?,
   val shard: Int,
+  /** The revision the thread's target was at when this was written: a comment made at @3 still says so once the target is at @4. */
+  val revision: String? = null,
 )
 
 data class ThreadView(val thread: ThreadDto, val comments: List<CommentDto>)
@@ -79,21 +83,30 @@ class CommentStore @Inject constructor(
     rs.getString("token"), rs.getString("title"), rs.getString("body"), rs.getString("creator"),
     rs.getString("target_key")?.let { entities.refOfKey(c, it) }, rs.getInt("cached_comments"), rs.isoOrNull("last_comment_at_ms"),
     iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("deleted_at_ms"), rs.getInt("version"),
-    rs.longOrNull("feed_sync_id"), rs.getInt("shard"),
+    rs.longOrNull("feed_sync_id"), rs.getInt("shard"), rs.getString("target_revision"),
   )
+
+  /** What revision the thing behind a target_key is at right now: an approvable's own, or the latest TLC was told of for a record. */
+  private fun revisionOfKey(c: Connection, key: String?): String? = when {
+    key == null -> null
+    key.startsWith("E:") -> c.select("SELECT revision FROM external_entities WHERE id = ?", listOf(key.substring(2).toLong())) { it.getString(1) }.firstOrNull()
+    key.startsWith("AP-") -> c.select("SELECT revision FROM approvables WHERE token = ?", listOf(key)) { it.getString(1) }.firstOrNull()
+    else -> null
+  }
 
   private fun threadByToken(c: Connection, token: String): ThreadDto =
     c.select("SELECT * FROM threads WHERE token = ?", listOf(token)) { thread(c, it) }.firstOrNull() ?: throw NotFoundException("no thread '$token'")
 
-  fun createThread(actor: Actor, title: String, body: String?, targetRef: String?): ThreadDto = db.tx { c ->
+  /** [revision]: say which revision of the target this is about; otherwise it is stamped with the current one. */
+  fun createThread(actor: Actor, title: String, body: String?, targetRef: String?, revision: String? = null): ThreadDto = db.tx { c ->
     tlcers.touch(c, actor)
     if (title.length > 255) throw BadRequestException("title is at most 255 chars")
     val target = targetRef?.let { entities.resolve(c, it, create = true) }
     val now = clock.millis()
     val token = newToken("T")
     c.insert(
-      "INSERT INTO threads (created_at_ms, updated_at_ms, token, title, body, creator, subject_token, external_entity_id, target_key, shard) VALUES (?,?,?,?,?,?,?,?,?,?)",
-      listOf(now, now, token, title, body, actor.name, target?.subjectToken, target?.entityId, target?.key, shardOf(token, config.tlc.feed_shards)),
+      "INSERT INTO threads (created_at_ms, updated_at_ms, token, title, body, creator, subject_token, external_entity_id, target_key, shard, target_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      listOf(now, now, token, title, body, actor.name, target?.subjectToken, target?.entityId, target?.key, shardOf(token, config.tlc.feed_shards), revision?.trim()?.removePrefix("@")?.take(64)?.takeIf { it.isNotEmpty() } ?: revisionOfKey(c, target?.key)),
     )
     target?.let { logs.internal(c, it, LogLevel.INFO, "tlc.comments", "thread $token opened by ${actor.name}: $title") }
     threadByToken(c, token)
@@ -144,7 +157,7 @@ class CommentStore @Inject constructor(
       rs.getLong("id") to CommentDto(
         rs.getString("comment_token"), rs.getString("thread_token"), rs.getString("parent_token"), rs.getString("thread_path"), rs.getInt("depth"),
         rs.getString("content"), rs.getString("author"), iso(rs.getLong("commented_at_ms")), rs.isoOrNull("edited_at_ms"), rs.isoOrNull("deleted_at_ms"),
-        rs.getInt("cached_likes"), false, rs.getInt("version"), rs.longOrNull("feed_sync_id"), rs.getInt("shard"),
+        rs.getInt("cached_likes"), false, rs.getInt("version"), rs.longOrNull("feed_sync_id"), rs.getInt("shard"), rs.getString("target_revision"),
       )
     }
     if (viewer == null || rows.isEmpty()) return rows.map { it.second }
@@ -180,8 +193,8 @@ class CommentStore @Inject constructor(
     val now = clock.millis()
     val token = newToken("C")
     val id = c.insert(
-      "INSERT INTO comments (created_at_ms, updated_at_ms, comment_token, thread_id, parent_comment_id, depth, content, author, commented_at_ms, shard) VALUES (?,?,?,?,?,?,?,?,?,?)",
-      listOf(now, now, token, threadId, parent?.id, (parent?.depth ?: -1) + 1, content, actor.name, now, shardOf(tToken, config.tlc.feed_shards)),
+      "INSERT INTO comments (created_at_ms, updated_at_ms, comment_token, thread_id, parent_comment_id, depth, content, author, commented_at_ms, shard, target_revision) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
+      listOf(now, now, token, threadId, parent?.id, (parent?.depth ?: -1) + 1, content, actor.name, now, shardOf(tToken, config.tlc.feed_shards), revisionOfKey(c, t[3] as String?)),
     )
     c.exec("UPDATE comments SET thread_path = ? WHERE id = ?", listOf(if (parent == null) seg(id) else "${parent.path}/${seg(id)}", id))
     c.exec("UPDATE threads SET cached_comments = cached_comments + 1, last_comment_at_ms = ?, updated_at_ms = ?, version = version + 1, feed_sync_id = NULL WHERE id = ?", listOf(now, now, threadId))
@@ -264,7 +277,7 @@ class CommentStore @Inject constructor(
 
 // ------------------------------------------------------------------------------------ actions
 
-data class ThreadReq(val title: String?, val body: String?, val target: String?)
+data class ThreadReq(val title: String?, val body: String?, val target: String?, val revision: String? = null)
 data class ThreadList(val threads: List<ThreadDto>)
 data class CommentReq(val thread: String?, val parent_comment: String?, val content: String?)
 data class CommentList(val comments: List<CommentDto>)
@@ -273,7 +286,7 @@ data class LikeList(val likes: List<LikeDto>)
 /** REST spelling of the nouns x verbs grid. The `tlc` CLI maps create/read/update/destroy and mk/ls/edit/rm onto these. */
 class ThreadActions @Inject constructor(private val store: CommentStore, private val actors: Actors) : WebAction {
   @Post("/api/threads") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
-  fun create(@RequestBody req: ThreadReq) = store.createThread(actors.current(), req.title.required("title"), req.body, req.target)
+  fun create(@RequestBody req: ThreadReq) = store.createThread(actors.current(), req.title.required("title"), req.body, req.target, req.revision)
 
   @Get("/api/threads") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun list(@QueryParam target: String?, @QueryParam creator: String?, @QueryParam include_deleted: Boolean?, @QueryParam limit: Int?) =

@@ -439,6 +439,32 @@ class TlcServiceTest {
   }
 
   @Test
+  fun `threads hang on an approvable, and every thread and comment remembers the revision it was written at`() {
+    rule("AR-1", "ANY_NON_SELF_APPROVAL")
+    val ap = request("$pc/50", "AR-1", extra = mapOf("revision" to "3"))
+    val onRecord = ok(post("/api/threads", mapOf("target" to "$pc/50", "title" to "is 20 right?"), "bob"))
+    assertThat(onRecord["revision"]).isEqualTo("3")
+    val onAp = ok(post("/api/threads", mapOf("target" to ap, "title" to "blocking: needs a backtest"), "bob"))
+    assertThat(onAp["target"]).isEqualTo(ap)
+    assertThat(onAp["revision"]).isEqualTo("3")
+    val c1 = ok(post("/api/comments", mapOf("thread" to onAp["token"], "content" to "at 20 it never fires"), "bob"))
+    assertThat(c1["revision"]).isEqualTo("3")
+
+    ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4", "context" to "20 -> 16")))
+    val c2 = ok(post("/api/comments", mapOf("thread" to onAp["token"], "content" to "16 works"), "bob"))
+    assertThat(c2["revision"]).isEqualTo("4")
+    val t = ok(get("/api/threads/${onAp["token"]}"))
+    assertThat(t.obj("thread")["revision"]).isEqualTo("3") // where the thread was opened does not move
+    assertThat(t.list("comments").map { it["revision"] }).containsExactly("3", "4")
+    assertThat(ok(post("/api/comments", mapOf("thread" to onRecord["token"], "content" to "late"), "bob"))["revision"]).isEqualTo("4")
+    // a thread can be pinned to an older revision on purpose
+    assertThat(ok(post("/api/threads", mapOf("target" to "$pc/50", "title" to "about the old one", "revision" to "@3"), "bob"))["revision"]).isEqualTo("3")
+
+    assertThat(ok(get("/api/approvables/$ap")).list("threads").map { it["title"] }).containsExactly("blocking: needs a backtest")
+    assertThat(ok(get("/api/summary?target=$pc/50")).list("threads").map { it["title"] }).containsExactlyInAnyOrder("is 20 right?", "blocking: needs a backtest", "about the old one")
+  }
+
+  @Test
   fun `any approval allows self`() {
     rule("AR-2", "ANY_APPROVAL")
     val ap = request("$pc/21", "AR-2")

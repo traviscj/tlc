@@ -267,7 +267,7 @@ data class ImpactDto(
   val reason: String,
 )
 
-data class ApprovableView(val approvable: ApprovableDto, /** `groups` here = the rule's own groups + this approvable's CONSENT parties. */ val rule: RuleDto, val approvals: List<ApprovalDto>, val evaluation: Evaluation, /** For the calling human. */ val you: CanApprove?, /** Groups pulled in by ownership, frozen at filing. */ val parties: List<PartyDto> = listOf(), /** Declared impacts and what they did to each rule aspect, frozen at filing. */ val impacts: List<ImpactDto> = listOf(), /** Every revision this approvable has been through, oldest first; the last is the one being decided. */ val revisions: List<RevisionDto> = listOf())
+data class ApprovableView(val approvable: ApprovableDto, /** `groups` here = the rule's own groups + this approvable's CONSENT parties. */ val rule: RuleDto, val approvals: List<ApprovalDto>, val evaluation: Evaluation, /** For the calling human. */ val you: CanApprove?, /** Groups pulled in by ownership, frozen at filing. */ val parties: List<PartyDto> = listOf(), /** Declared impacts and what they did to each rule aspect, frozen at filing. */ val impacts: List<ImpactDto> = listOf(), /** Every revision this approvable has been through, oldest first; the last is the one being decided. */ val revisions: List<RevisionDto> = listOf(), /** Discussion of this request: threads whose target is the approvable. Each thread and comment carries the revision it was written at. */ val threads: List<ThreadDto> = listOf())
 data class ActionResult(val changed: Boolean, val approvable: ApprovableDto, val evaluation: Evaluation)
 
 private val OPEN = "('PENDING','APPROVED','ACTED')"
@@ -955,7 +955,7 @@ class RuleActions @Inject constructor(private val store: ApprovalStore, private 
   fun destroy(@PathParam token: String) = store.destroyRule(token)
 }
 
-class ApprovableActions @Inject constructor(private val store: ApprovalStore, private val actors: Actors, private val outbox: Outbox) : WebAction {
+class ApprovableActions @Inject constructor(private val store: ApprovalStore, private val actors: Actors, private val outbox: Outbox, private val comments: CommentStore) : WebAction {
   @Post("/api/approvables") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
   fun create(@RequestBody req: ApprovableReq) = store.create(actors.current(), req.target.required("target"), req.rule.required("rule"), req.context, req.client_id, req.requested_by, req.mode, req.ttl_seconds, req.impacts.orEmpty(), req.revision)
 
@@ -964,7 +964,7 @@ class ApprovableActions @Inject constructor(private val store: ApprovalStore, pr
     ApprovableList(store.list(target, state, rule, requested_by, awaiting?.let { if (it == "me") actors.current().requireHuman("awaiting=me") else it }, limitOf(limit)))
 
   @Get("/api/approvables/{token}") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
-  fun get(@PathParam token: String) = store.get(token, actors.current())
+  fun get(@PathParam token: String) = store.get(token, actors.current()).copy(threads = comments.listThreads(token, null, false, 50))
 
   @Post("/api/approvables/{token}/approve") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
   fun approve(@PathParam token: String, @RequestBody req: ApproveReq) = store.approve(actors.current(), token, req.comment, req.revision)

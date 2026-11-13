@@ -82,11 +82,13 @@ class InfoActions @Inject constructor(
   fun summary(@QueryParam target: String, @QueryParam log_limit: Int?): Summary {
     val entity = try { entities.get(target) } catch (e: NotFoundException) { null }
     val ref = entity?.ref ?: target
+    val aps = if (entity != null) approvals.list(target, null, null, null, null, 50) else listOf()
     return Summary(
       ref, entity != null, entity,
       tags.tagsOf(target, null, null).tags,
-      comments.listThreads(target, null, false, 50),
-      if (entity != null) approvals.list(target, null, null, null, null, 50) else listOf(),
+      // The record's own threads plus those on its approvables: one conversation list per record.
+      (comments.listThreads(target, null, false, 50) + aps.flatMap { comments.listThreads(it.token, null, false, 20) }).sortedByDescending { it.last_comment_at ?: it.created_at },
+      aps,
       if (entity != null) logs.query(target, null, null, null, null, null, null, null, null, null, limitOf(log_limit, 50)).entries else listOf(),
       if (entity != null) ownership.of(target, null, null).cells else listOf(),
     )
