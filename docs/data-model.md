@@ -7,7 +7,7 @@
 
 ## Conventions
 
-| shorthand in the note | columns |
+| shorthand in [the note](2020_scribble.md) | columns |
 |---|---|
 | **i c u v** | `id` BIGINT auto-inc · `created_at_ms` · `updated_at_ms` · `version` (starts 1, +1 per update) |
 | **t** | `token` — public id, `<PREFIX>-<12 random [a-z2-9]>`; ids never leave the service |

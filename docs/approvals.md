@@ -11,6 +11,9 @@
         └──────────────── decline ──────────────────┴──────────────────────▶  DECLINED
 ```
 
+The shape comes from the [`# approvals` section of the 2020 note](2020_scribble.md#approvals): approvable,
+approvals, approval rule, rule-to-group. [decisions.md](decisions.md#approvals) says how each bullet was read.
+
 | piece | is |
 |---|---|
 | **approval rule** ([`AR-6392`](example-world.md#AR-6392)) | what is required: a `requirement` + the groups that count |

@@ -8,7 +8,9 @@ an approval rule. The source
 service keeps its own tables; TLC only ever learns the triple `service/entity/id`.
 
 Kotlin + [misk](https://github.com/cashapp/misk), raw SQL over misk-jdbc, MySQL. JSON over HTTP.
-Port **8790**. Built from a one-page note; `docs/decisions.md` records how each line of it was read.
+Port **8790**. Built from a one-page note, [`docs/2020_scribble.md`](docs/2020_scribble.md), taken in 2020 while
+riskarbiter2020 was being implemented and its approvals needed to be more flexible than they were;
+[`docs/decisions.md`](docs/decisions.md) records how each line of it was read.
 
 ```
 sentinel ──tag/log/comment/request──▶ ┌──────────── TLC ─────────────┐
@@ -81,6 +83,8 @@ tlc --as bob ap mk sentinel/signals/velocity_24h AR-3003 --ratify   # break-glas
 ```
 
 ## The note → the code
+
+The note is [`docs/2020_scribble.md`](docs/2020_scribble.md), kept as written.
 
 | note | where | doc |
 |---|---|---|

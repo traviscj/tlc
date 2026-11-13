@@ -1,6 +1,8 @@
 # How the note was read
 
-The spec was a page of bullets. Where it was silent or ambiguous, this is what was chosen and why.
+The spec was a page of bullets: [2020_scribble.md](2020_scribble.md), notes taken in 2020 while
+riskarbiter2020 was being implemented, on what tags, logs, comments and (above all) more flexible
+approvals would need. It is kept as written. Where it was silent or ambiguous, this is what was chosen and why.
 Each is cheap to revisit; the ones marked ⚑ are the ones most worth a second opinion.
 
 ## Vocabulary
