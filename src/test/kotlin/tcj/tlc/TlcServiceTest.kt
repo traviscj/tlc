@@ -51,7 +51,7 @@ class TlcServiceTest {
     // MiskTestingServiceModule pins the clock (to 2018); the scenarios below are written against late 2026.
     clock.setNow(java.time.Instant.parse("2026-11-10T12:00:00Z"))
     db.tx { c ->
-      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions")) c.exec("DELETE FROM $t")
+      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks")) c.exec("DELETE FROM $t")
     }
     post("/api/entity-types", mapOf("source_service" to "sentinel", "source_entity" to "proposed_changes", "url_template" to "https://sentinel.example/pc/{id}"))
   }
@@ -462,6 +462,80 @@ class TlcServiceTest {
 
     assertThat(ok(get("/api/approvables/$ap")).list("threads").map { it["title"] }).containsExactly("blocking: needs a backtest")
     assertThat(ok(get("/api/summary?target=$pc/50")).list("threads").map { it["title"] }).containsExactlyInAnyOrder("is 20 right?", "blocking: needs a backtest", "about the old one")
+  }
+
+  @Test
+  fun `checks gate approval alongside people, per revision, with the bound on the rule`() {
+    val checks = listOf(
+      mapOf("name" to "zeroed_groups", "description" to "rule groups whose flag rate drops to zero", "reporter" to "sentinel", "max" to 0),
+      mapOf("name" to "flag_rate_delta_pct", "min" to -15, "max" to 15, "unit" to "%"),
+      mapOf("name" to "lint"),
+    )
+    ok(post("/api/approval-rules", mapOf("token" to "AR-C", "description" to "threshold change", "requirement" to "ANY_NON_SELF_APPROVAL", "checks" to checks), "root"))
+    assertThat(post("/api/approval-rules", mapOf("token" to "AR-B", "description" to "x", "requirement" to "ANY_APPROVAL", "checks" to listOf(mapOf("name" to "a", "min" to 2, "max" to 1))), "root").code).isEqualTo(400)
+    val ap = request("$pc/60", "AR-C", extra = mapOf("revision" to "3"))
+    fun check(body: Map<String, Any?>, service: String? = "sentinel", user: String? = null) = post("/api/approvables/$ap/checks", body, user, service)
+    fun ev() = ok(get("/api/approvables/$ap")).obj("evaluation")
+    @Suppress("UNCHECKED_CAST") fun statuses() = (ev()["checks"] as List<Map<String, Any?>>).associate { it["name"] to it["status"] }
+
+    // people alone are not enough
+    ok(post("/api/approvables/$ap/approve", user = "bob"))
+    assertThat(state(ap)).isEqualTo("PENDING")
+    assertThat(ev()["approvals_satisfied"]).isEqualTo(true)
+    assertThat(ev()["summary"]).isEqualTo("approved by bob; checks 0/3: zeroed_groups MISSING, flag_rate_delta_pct MISSING, lint MISSING")
+    assertThat(post("/api/approvables/$ap/execute").code).isEqualTo(409)
+
+    assertThat(check(mapOf("name" to "lint", "status" to "PASS"), service = null, user = "alice").code).isEqualTo(400) // a person can't vouch for a machine
+    assertThat(check(mapOf("name" to "zeroed_groups", "value" to 0), service = "backtester").code).isEqualTo(403) // not the named reporter
+    assertThat(check(mapOf("name" to "zeroed_groups", "status" to "PASS")).code).isEqualTo(400) // bounded: the value decides
+    assertThat(check(mapOf("name" to "lint")).code).isEqualTo(400)
+    assertThat(check(mapOf("name" to "lint", "status" to "PASS", "revision" to "2")).code).isEqualTo(409) // a result for another revision
+    ok(check(mapOf("name" to "lint", "status" to "PENDING", "url" to "https://ci.example/1")))
+    ok(check(mapOf("name" to "lint", "status" to "PASS"), service = "ci"))
+    ok(check(mapOf("name" to "zeroed_groups", "value" to 0)))
+    // the reporter says PASS; the rule's bound says otherwise
+    val fail = ok(check(mapOf("name" to "flag_rate_delta_pct", "value" to -22.5, "status" to "PASS", "summary" to "30d backtest")))
+    assertThat(fail.obj("approvable")["approval_state"]).isEqualTo("PENDING")
+    assertThat(statuses()).isEqualTo(mapOf("zeroed_groups" to "PASS", "flag_rate_delta_pct" to "FAIL", "lint" to "PASS"))
+    ok(check(mapOf("name" to "coverage", "status" to "FAIL"))) // not named by the rule: shown, not gating
+    val pass = ok(check(mapOf("name" to "flag_rate_delta_pct", "value" to 15)))
+    assertThat(pass.obj("approvable")["approval_state"]).isEqualTo("APPROVED")
+    assertThat(statuses()["coverage"]).isEqualTo("FAIL")
+
+    // a later failure on the same revision reopens it; a new revision clears every result (bob's approval too: DISMISS)
+    ok(check(mapOf("name" to "zeroed_groups", "value" to 2)))
+    assertThat(state(ap)).isEqualTo("PENDING")
+    ok(check(mapOf("name" to "zeroed_groups", "value" to 0)))
+    assertThat(state(ap)).isEqualTo("APPROVED")
+    ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4")))
+    assertThat(statuses().values.toSet()).isEqualTo(setOf("MISSING"))
+    assertThat(ok(get("/api/approvables/$ap")).list("check_reports").map { it["revision"] }.toSet()).isEqualTo(setOf("3"))
+    ok(post("/api/approvables/$ap/approve", user = "bob"))
+    for (c in listOf(mapOf("name" to "lint", "status" to "PASS"), mapOf("name" to "zeroed_groups", "value" to 0), mapOf("name" to "flag_rate_delta_pct", "value" to 3.5))) ok(check(c))
+    assertThat(ok(post("/api/approvables/$ap/execute", mapOf("revision" to "4")))["changed"]).isEqualTo(true)
+    assertThat(check(mapOf("name" to "lint", "status" to "FAIL")).code).isEqualTo(409)
+
+    val audit = ok(get("/api/logs?target=$pc/60&source=tlc.approvals&order=asc")).list("entries").map { (it["message"] as String).substringAfter(": ") }
+    assertThat(audit).contains(
+      "check flag_rate_delta_pct FAIL at @3 by svc:sentinel (-22.5 %; allowed -15..15 %; 30d backtest)",
+      "check coverage FAIL at @3 by svc:sentinel [not required by AR-C]",
+      "PENDING -> APPROVED (check flag_rate_delta_pct PASS; approved by bob; checks 3/3 passed)",
+      "APPROVED -> PENDING (check zeroed_groups FAIL; approved by bob; checks 2/3: zeroed_groups FAIL)",
+    )
+
+    // a notify-only rule with a check waits for the check, and nobody is asked
+    member("eng", "dave")
+    ok(post("/api/approval-rules", mapOf("token" to "AR-N", "description" to "fyi", "requirement" to "SLACK_NOTIFICATION", "groups" to listOf(grp("ENG", "eng", slack = "#eng")), "checks" to listOf(mapOf("name" to "lint"))), "root"))
+    val n = request("$pc/61", "AR-N")
+    assertThat(state(n)).isEqualTo("PENDING")
+    ok(post("/api/approvables/$n/checks", mapOf("name" to "lint", "status" to "PASS"), null, "ci"))
+    assertThat(state(n)).isEqualTo("APPROVED")
+    // checks are policy: changing them under an open approvable needs force
+    val open = request("$pc/62", "AR-C")
+    assertThat(call("PATCH", "/api/approval-rules/AR-C", mapOf("checks" to listOf<Any>()), "root").code).isEqualTo(409)
+    ok(post("/api/approvables/$open/approve", user = "bob"))
+    ok(call("PATCH", "/api/approval-rules/AR-C?force=true", mapOf("checks" to listOf<Any>()), "root"))
+    assertThat(state(open)).isEqualTo("APPROVED")
   }
 
   @Test

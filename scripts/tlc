@@ -16,7 +16,8 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
   tlc comment mk T-… CONTENT [--parent C-…] | ls T-… | show C-… | edit C-… CONTENT | rm C-… | like C-… | unlike C-… | likes C-…
   tlc group add GROUP LDAP [--admin] | rm GROUP LDAP | ls | contact GROUP [--slack '#chan'] [--email a@b] | contacts
   tlc rule mk --requirement R --desc D [--token AR-…] [--min N] [--on-revision DISMISS|KEEP] [--group ENG:trust-infra[:admins][:#chan][:a@b]]…
-              [--aspect availability[:notify][:downstream][:fallback=GROUP][:above=N][:unit=U]]… [--applies-to service/entity]… | ls | show | edit | rm
+              [--aspect availability[:notify][:downstream][:fallback=GROUP][:above=N][:unit=U]]… [--applies-to service/entity]…
+              [--check NAME[:min=N][:max=N][:unit=U][:reporter=SERVICE][:desc=D]]… | ls | show | edit | rm
   tlc ap mk TARGET RULE [--rev R] [--context C] [--client-id ID] [--requested-by LDAP] [--ratify [--ttl SECONDS]] [--impact ASPECT=N|?[:unit[:note]]]… (with --service) | ls [--target --state --awaiting LDAP|me]
   tlc own claim TARGET ASPECT GROUP [--role STAKEHOLDER] [--at ISO] | release TARGET ASPECT GROUP | transfer TARGET ASPECT FROM TO
   tlc own of TARGET [--at ISO] [--known-at ISO] | affirm GROUP [--target T] [--aspect A] | log [--target T --aspect A --owner G]
@@ -24,6 +25,7 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
   tlc own aspects [--type T] | expect service/entity ASPECT [--desc D]        (TARGET may be service/entity/* for a type-wide default)
   tlc edge mk FROM TO [--kind FEEDS] | ls [--target T] | rm FROM TO
   tlc ap show AP-… | approve AP-… [--comment C] [--rev R] | unapprove AP-… | decline AP-… [--reason R] | execute AP-… [--rev R]
+  tlc ap check AP-… NAME [--status PASS|FAIL|PENDING] [--value N] [--note SUMMARY] [--link URL] [--rev R]   (with --service) an automated check's result
   tlc ap revise AP-… --rev R [--context C]      the target changed: R is the source service's label for the new version
   tlc feed status | fetch FEED [--after N] | follow FEED [--cursor-file F] | publish
   tlc summary TARGET | info | me
@@ -230,6 +232,14 @@ def parse_aspect(s):
             "unit": next((x.split("=", 1)[1] for x in rest if x.startswith("unit=")), None)}
 
 
+def parse_check(s):
+    """flag_rate_delta_pct:min=-15:max=15:unit=%:reporter=sentinel:desc=overall flag rate change"""
+    name, *rest = s.split(":")
+    kv = dict(x.split("=", 1) for x in rest if "=" in x)
+    f = lambda k: float(kv[k]) if k in kv else None
+    return {"name": name, "min": f("min"), "max": f("max"), "unit": kv.get("unit"), "reporter": kv.get("reporter"), "description": kv.get("desc")}
+
+
 def num(x): return "?" if x is None else (str(int(x)) if float(x).is_integer() else str(x))
 
 
@@ -326,10 +336,13 @@ def n_rule(v):
             for g in x["groups"]:
                 print(f"    {g['group']:<8} <- {g['directory_group']}{' (admins only)' if g.get('admins_only') else ''}  {g.get('slack_channel', '')} {g.get('email', '')}".rstrip())
             if x.get("applies_to"): print(f"    only for {', '.join(x['applies_to'])}")
+            for k in x.get("checks", []):
+                b = "" if k.get("min") is None and k.get("max") is None else f" in {num(k['min']) if k.get('min') is not None else ''}..{num(k['max']) if k.get('max') is not None else ''}{' ' + k['unit'] if k.get('unit') else ''}"
+                print(f"    CHECK    <- {k['name']}{b}{' from ' + k['reporter'] if k.get('reporter') else ''}{'  ' + k['description'] if k.get('description') else ''}")
             if x.get("on_revision") == "KEEP": print("    on a new revision: approvals are KEPT (default: dismissed)")
             for a in x.get("aspects", []):
                 print(f"    {a['mode']:<8} <- owner of '{a['aspect']}'{' incl. downstream' if a['scope'] == 'DOWNSTREAM' else ''}{' (else ' + a['fallback_group'] + ')' if a.get('fallback_group') else ''}{' when impact > ' + num(a['threshold']) + (' ' + a['unit'] if a.get('unit') else '') if a.get('threshold') is not None else ''}")
-    body = lambda: {"token": A.token, "description": A.desc, "requirement": A.requirement, "min_groups": A.min, "groups": [parse_group(g) for g in A.group] if A.group else None, "aspects": [parse_aspect(a) for a in A.aspect] if A.aspect else None, "applies_to": A.applies_to, "on_revision": A.on_revision}
+    body = lambda: {"token": A.token, "description": A.desc, "requirement": A.requirement, "min_groups": A.min, "groups": [parse_group(g) for g in A.group] if A.group else None, "aspects": [parse_aspect(a) for a in A.aspect] if A.aspect else None, "applies_to": A.applies_to, "on_revision": A.on_revision, "checks": [parse_check(k) for k in A.check] if A.check else None}
     if v == "mk": show(call("POST", "/api/approval-rules", body()))
     elif v == "ls": show(call("GET", "/api/approval-rules"))
     elif v == "show": show(call("GET", "/api/approval-rules/" + need(1, "rule show AR-…")))
@@ -350,6 +363,9 @@ def n_ap(v):
         print(f"  {int(e['have'])}/{int(e['needed'])}  {e['summary']}")
         for g in e["groups"]:
             print(f"    {g['group']:<8} {('✓ ' + g['satisfied_by']) if g.get('satisfied_by') else '·':<12} candidates={','.join(g['candidates']) or '-'}  <- {g['directory_group']}{' admins' if g['admins_only'] else ''}")
+        for k in e.get("checks", []):
+            v_ = "" if k.get("value") is None else num(k["value"]) + (" " + k["unit"] if k.get("unit") else "")
+            print(f"    check {k['name']:<22} {k['status']:<8} {v_:<10} {('allowed ' + k['bound']) if k.get('bound') else '':<20} {k.get('reported_by') or '-'}{'' if k['required'] else '  (not required)'}{'  “' + k['summary'] + '”' if k.get('summary') else ''}")
         for i in view.get("impacts", []):
             print(f"    impact {i['aspect']:<12} {(num(i.get('magnitude')) if i['declared'] else 'undeclared') + (' ' + i['unit'] if i.get('unit') else ''):<16} {(i.get('rule_mode') or '-') + ' -> ' + i['effect'] if i.get('rule_mode') != i['effect'] else i['effect']:<18} {i['reason']}{'  “' + i['note'] + '”' if i.get('note') else ''}")
         for p in view.get("parties", []):
@@ -376,6 +392,9 @@ def n_ap(v):
     elif v == "ls": emit(call("GET", "/api/approvables", target=A.target, state=A.state, rule=A.rule, awaiting=A.awaiting, limit=A.limit), "approvables", cols)
     elif v == "show": show(call("GET", "/api/approvables/" + need(1, "ap show AP-…")))
     elif v == "approve": result(call("POST", f"/api/approvables/{need(1, 'ap approve AP-…')}/approve", {"comment": A.comment, "revision": A.rev}))
+    elif v == "check":
+        ap, name = need(2, "ap check AP-… NAME [--status PASS|FAIL|PENDING] [--value N] [--note SUMMARY] [--link URL] [--rev R]   (with --service)")
+        result(call("POST", f"/api/approvables/{ap}/checks", {"name": name, "status": A.status, "value": A.value, "summary": A.note, "url": A.link, "revision": A.rev}))
     elif v == "revise": result(call("POST", f"/api/approvables/{need(1, 'ap revise AP-… --rev R')}/revise", {"revision": A.rev, "context": A.context}))
     elif v == "unapprove": result(call("POST", f"/api/approvables/{need(1, 'ap unapprove AP-…')}/unapprove"))
     elif v == "decline": result(call("POST", f"/api/approvables/{need(1, 'ap decline AP-…')}/decline", {"reason": A.reason}))
@@ -425,12 +444,14 @@ def main():
     p.add_argument("verb", nargs="?")
     p.add_argument("args", nargs="*")
     for f in ("desc", "url-template", "name", "type", "q", "at", "known-at", "to", "note", "target", "tag", "level", "source", "body", "title", "creator", "parent",
-              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "slack", "email", "rev", "on-revision"):
+              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "slack", "email", "rev", "on-revision", "link"):
         p.add_argument(("-q" if f == "q" else "--" + f), default=None)
     p.add_argument("--from", dest="from_", default=None)
     p.add_argument("--group", action="append")
     p.add_argument("--aspect", action="append")
     p.add_argument("--impact", action="append")
+    p.add_argument("--check", action="append")
+    p.add_argument("--value", type=float, default=None)
     p.add_argument("--applies-to", action="append", help="service/entity; repeatable. `--applies-to ""` on edit clears it")
     for f in ("limit", "min", "after", "ttl"): p.add_argument("--" + f, type=int, default=None)
     for f in ("all", "admin", "force", "once", "ratify"): p.add_argument("--" + f, action="store_true")
