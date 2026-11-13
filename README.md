@@ -8,15 +8,25 @@ an approval rule. The source
 service keeps its own tables; TLC only ever learns the triple `service/entity/id`.
 
 Kotlin + [misk](https://github.com/cashapp/misk), raw SQL over misk-jdbc, MySQL. JSON over HTTP.
-Port **8790**. Built from a one-page note; `docs/decisions.md` records how each line of it was read.
+Port **8790**. Built from a one-page note, [`docs/2020_scribble.md`](docs/2020_scribble.md), taken in 2020 while
+riskarbiter2020 was being implemented and its approvals needed to be more flexible than they were;
+[`docs/decisions.md`](docs/decisions.md) records how each line of it was read.
 
-```
-sentinel ──tag/log/comment/request──▶ ┌──────────── TLC ─────────────┐
-   ▲   <iframe src=/iframe?target=…> │ entities  tags  logs         │──▶ outbox ─▶ Slack / log
-   └────── /_feeds/fetch/approvables │ threads·comments·likes       │
-           (APPROVED → claim+apply)  │ rules·groups·approvables     │◀── humans: console, iframe, `tlc` CLI
-           (REVERTED → undo)         │ ownership·aspects·edges      │
-                                     └──────────────────────────────┘
+```mermaid
+flowchart LR
+  sentinel["sentinel<br/>(a source service)"]
+  subgraph TLC
+    direction TB
+    t1["entities · tags · logs"]
+    t2["threads · comments · likes"]
+    t3["rules · groups · approvables"]
+    t4["ownership · aspects · edges"]
+  end
+  sentinel -- "tag / log / comment / request" --> TLC
+  TLC -- "iframe src=/iframe?target=…" --> sentinel
+  TLC -- "/_feeds/fetch/approvables<br/>APPROVED → claim + apply<br/>REVERTED → undo" --> sentinel
+  TLC --> outbox --> slack["Slack / log"]
+  humans["humans: console, iframe, tlc CLI"] --> TLC
 ```
 
 ## Run it
@@ -29,7 +39,7 @@ scripts/dev-restart.sh                     # …or: rebuild + restart in the bac
 scripts/seed.sh                            # the sentinel/proposed_changes/1234 scenario
 open http://localhost:8790/                # console        (type an ldap into "as")
 open http://localhost:8790/demo            # a fake source-service page embedding the iframe
-scripts/demo.sh                            # all eight narrated demos (≈25 s; re-runnable, each run uses fresh ids)
+scripts/demo.sh                            # all nine narrated demos (≈25 s; re-runnable, each run uses fresh ids)
 ./gradlew test                             # 25 tests: 21 over real HTTP + MySQL, 4 on the approval engine
 ```
 
@@ -82,6 +92,8 @@ tlc --as bob ap mk sentinel/signals/velocity_24h AR-3003 --ratify   # break-glas
 
 ## The note → the code
 
+The note is [`docs/2020_scribble.md`](docs/2020_scribble.md), kept as written.
+
 | note | where | doc |
 |---|---|---|
 | Entities: create / read / update / destroy | `Entities.kt` — types explicit, records vivified on first reference | [entities](docs/entities.md) |
@@ -110,6 +122,7 @@ Every endpoint: [docs/api.md](docs/api.md). Config, auth, deploy notes: [docs/op
 | `scripts/demos/06-feeds.sh` | a source service tailing `approvables` and claiming APPROVED changes exactly once |
 | `scripts/demos/07-curl.sh` | the whole flow in bare curl against a second service (`billing/invoices`) |
 | `scripts/demos/08-ownership.sh` | aspects; type defaults; CONTESTED; time travel; coverage + gaps; blast radius over the graph; rules that resolve approvers from owners; `applies_to`; declared impacts vs thresholds; break-glass ratified and reverted |
+| `scripts/demos/09-revisions-checks-agents.sh` | a request pinned to `…@3`; checks with the bound on the rule; discussion on the request; revise to `@4` dismissing approvals; execute only the approved revision; a second rule that keeps approvals and admits agents |
 | `/demo` in a browser | a "sentinel" page embedding the iframe; switch the viewer between alice/bob/carol |
 | `scripts/ui_smoke.py` | Playwright click-through of the iframe and console (optional; needs Playwright) |
 

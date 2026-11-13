@@ -62,7 +62,7 @@ class InfoActions @Inject constructor(
     return InfoDto(
       settings = linkedMapOf("public_url" to s.public_url, "admins" to s.admins, "auto_register_entity_types" to s.auto_register_entity_types, "feed_shards" to s.feed_shards, "max_comment_depth" to s.max_comment_depth, "background_interval_ms" to s.background_interval_ms, "slack_webhook" to (s.slack_webhook_url != null), "ownership_lapse_days" to s.ownership_lapse_days, "ratify_ttl_seconds" to s.ratify_ttl_seconds),
       counts = counts,
-      requirements = Requirement.entries.map { EnumValue(it.name, it.doc) },
+      requirements = Requirement.offered(s.requirements).map { EnumValue(it.name, it.doc) },
       states = listOf(
         EnumValue("PENDING", "initial; waiting on approvals"),
         EnumValue("APPROVED", "requirement met; may still drop back to PENDING if an approval is withdrawn"),
@@ -82,11 +82,13 @@ class InfoActions @Inject constructor(
   fun summary(@QueryParam target: String, @QueryParam log_limit: Int?): Summary {
     val entity = try { entities.get(target) } catch (e: NotFoundException) { null }
     val ref = entity?.ref ?: target
+    val aps = if (entity != null) approvals.list(target, null, null, null, null, 50) else listOf()
     return Summary(
       ref, entity != null, entity,
       tags.tagsOf(target, null, null).tags,
-      comments.listThreads(target, null, false, 50),
-      if (entity != null) approvals.list(target, null, null, null, null, 50) else listOf(),
+      // The record's own threads plus those on its approvables: one conversation list per record.
+      (comments.listThreads(target, null, false, 50) + aps.flatMap { comments.listThreads(it.token, null, false, 20) }).sortedByDescending { it.last_comment_at ?: it.created_at },
+      aps,
       if (entity != null) logs.query(target, null, null, null, null, null, null, null, null, null, limitOf(log_limit, 50)).entries else listOf(),
       if (entity != null) ownership.of(target, null, null).cells else listOf(),
     )

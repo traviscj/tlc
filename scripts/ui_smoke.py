@@ -4,9 +4,9 @@
 Needs Playwright + a local Chrome:  python scripts/ui_smoke.py [iframe.png console.png]
 (on this Mac: ~/bankcli/.venv/bin/python scripts/ui_smoke.py). Run scripts/seed.sh first: it uses AR-6392.
 """
-import sys, time
+import os, sys, time
 from playwright.sync_api import sync_playwright
-U = "http://localhost:8790"; E = f"sentinel/proposed_changes/ui{int(time.time())}"
+U = os.environ.get("TLC_URL", "http://localhost:8790"); E = f"sentinel/proposed_changes/ui{int(time.time())}"
 errs = []
 with sync_playwright() as p:
     b = p.chromium.launch(channel="chrome", headless=True)

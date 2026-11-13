@@ -24,6 +24,11 @@ data class TlcSettings(
    * can't mint a table TLC "knows about". true: first reference registers the type.
    */
   val auto_register_entity_types: Boolean = false,
+  /**
+   * The requirement types this deployment offers when a rule is written (names from [Requirement]).
+   * null = all of them. Rules that already use a type taken off the menu keep working.
+   */
+  val requirements: List<String>? = null,
   /** A reply to a comment already at this depth is filed as its sibling instead of nesting further. */
   val max_comment_depth: Int = 16,
   /** Slack incoming-webhook URL. null = SLACK notifications are logged, not sent. */

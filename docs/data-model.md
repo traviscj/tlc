@@ -7,7 +7,7 @@
 
 ## Conventions
 
-| shorthand in the note | columns |
+| shorthand in [the note](2020_scribble.md) | columns |
 |---|---|
 | **i c u v** | `id` BIGINT auto-inc · `created_at_ms` · `updated_at_ms` · `version` (starts 1, +1 per update) |
 | **t** | `token` — public id, `<PREFIX>-<12 random [a-z2-9]>`; ids never leave the service |
@@ -23,17 +23,43 @@ Token prefixes: `ET-` type · `E-` entity · `U-` tlcer · `TG-` tag · `TGG-` t
 
 ## Tables
 
-```
-external_entity_types ─1:N─ external_entities ─┬─ taggings ─N:1─ tags
-  (source_service,            (type_id,        ├─ log_entries
-   source_entity) UNIQUE       source_entity_id├─ threads ─1:N─ comments ─1:N─ likes
-                               ) UNIQUE        └─ approvables ─1:N─ approvals
-                                                     │N:1
-                              directory_memberships   approval_rules ─1:N─ approval_rule_groups
-                              tlcers   notifications   sequences                └1:N─ approval_rule_aspects
-
-external_entity_types ─1:N─ ownership_aspects        external_entities ─N:M─ external_entities  (entity_edges)
-external_entities | types ─1:N─ ownerships           approvables ─1:N─ approvable_parties      directory_groups
+```mermaid
+erDiagram
+  external_entity_types ||--o{ external_entities : "1:N"
+  external_entities ||--o{ taggings : ""
+  tags ||--o{ taggings : "N:1"
+  external_entities ||--o{ log_entries : ""
+  external_entities ||--o{ threads : ""
+  threads ||--o{ comments : "1:N"
+  comments ||--o{ likes : "1:N"
+  external_entities ||--o{ approvables : ""
+  approvables ||--o{ approvals : "1:N"
+  approval_rules ||--o{ approvables : "N:1"
+  approval_rules ||--o{ approval_rule_groups : "1:N"
+  approval_rules ||--o{ approval_rule_aspects : "1:N"
+  external_entity_types ||--o{ ownership_aspects : "1:N"
+  external_entities }o--o{ external_entities : "N:M (entity_edges)"
+  external_entity_types ||--o{ ownerships : "1:N (type-wide)"
+  external_entities ||--o{ ownerships : "1:N"
+  approvables ||--o{ approvable_parties : "1:N"
+  external_entity_types {
+    string source_service "UNIQUE with source_entity"
+    string source_entity
+  }
+  external_entities {
+    bigint type_id "UNIQUE with source_entity_id"
+    string source_entity_id
+  }
+  directory_memberships {
+  }
+  directory_groups {
+  }
+  tlcers {
+  }
+  notifications {
+  }
+  sequences {
+  }
 ```
 
 | table | conventions | columns beyond them | keys / invariants |

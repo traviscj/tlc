@@ -36,6 +36,13 @@ class ApprovalEngineTest {
   }
 
   @Test
+  fun `the requirement menu is every type unless the deployment narrows it`() {
+    assertThat(Requirement.offered(null)).containsExactlyElementsOf(Requirement.entries)
+    assertThat(Requirement.offered(listOf("all_groups", "ANY_NON_SELF_APPROVAL"))).containsExactly(Requirement.ALL_GROUPS, Requirement.ANY_NON_SELF_APPROVAL)
+    org.assertj.core.api.Assertions.assertThatThrownBy { Requirement.offered(listOf("TWO_KEYS")) }.hasMessageContaining("bad requirement")
+  }
+
+  @Test
   fun `self approvals count only under ANY_APPROVAL`() {
     val self = mapOf("req" to setOf("A"))
     assertThat(ev(Requirement.ANY_APPROVAL, g(), self).satisfied).isTrue()

@@ -51,7 +51,7 @@ class TlcServiceTest {
     // MiskTestingServiceModule pins the clock (to 2018); the scenarios below are written against late 2026.
     clock.setNow(java.time.Instant.parse("2026-11-10T12:00:00Z"))
     db.tx { c ->
-      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts")) c.exec("DELETE FROM $t")
+      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks", "agents")) c.exec("DELETE FROM $t")
     }
     post("/api/entity-types", mapOf("source_service" to "sentinel", "source_entity" to "proposed_changes", "url_template" to "https://sentinel.example/pc/{id}"))
   }
@@ -376,6 +376,219 @@ class TlcServiceTest {
       "approval requested by alice under AR-1 (ANY_NON_SELF_APPROVAL)", "approved by bob",
       "PENDING -> APPROVED (approval by bob; approved by bob)", "APPROVED -> EXECUTED by alice",
     )
+  }
+
+  @Test
+  fun `a revised approvable dismisses or keeps approvals as its rule says, and only the approved revision executes`() {
+    member("eng", "bob"); member("risk", "carol")
+    rule("AR-D", "ALL_GROUPS", listOf(grp("ENG", "eng"), grp("RISK", "risk")))
+    ok(post("/api/approval-rules", mapOf("token" to "AR-K", "description" to "keep", "requirement" to "ANY_NON_SELF_APPROVAL", "on_revision" to "KEEP"), "root"))
+    assertThat(post("/api/approval-rules", mapOf("token" to "AR-X", "description" to "x", "requirement" to "ANY_APPROVAL", "on_revision" to "SOMETIMES"), "root").code).isEqualTo(400)
+    assertThat(ok(get("/api/approval-rules/AR-D"))["on_revision"]).isEqualTo("DISMISS")
+
+    val ap = request("$pc/40", "AR-D", extra = mapOf("revision" to "3"))
+    assertThat(ok(get("/api/approvables/$ap")).obj("approvable")["revision"]).isEqualTo("3")
+    assertThat(ok(get("/api/entities/get?target=$pc/40"))["revision"]).isEqualTo("3")
+    ok(post("/api/approvables/$ap/approve", user = "bob"))
+    assertThat(post("/api/approvables/$ap/approve", mapOf("revision" to "2"), "carol").code).isEqualTo(409) // carol read @2
+    ok(post("/api/approvables/$ap/approve", mapOf("revision" to "3"), "carol"))
+    assertThat(state(ap)).isEqualTo("APPROVED")
+
+    assertThat(post("/api/approvables/$ap/revise", mapOf("revision" to "4"), "bob").code).isEqualTo(403) // not the requesting side
+    assertThat(post("/api/approvables/$ap/revise", mapOf("context" to "no label")).code).isEqualTo(400)
+    val r = ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4", "context" to "threshold 20 -> 16")))
+    assertThat(r["changed"]).isEqualTo(true)
+    assertThat(r.obj("approvable")["approval_state"]).isEqualTo("PENDING")
+    assertThat(r.obj("approvable")["revision"]).isEqualTo("4")
+    assertThat(r.obj("approvable")["approval_context"]).isEqualTo("threshold 20 -> 16")
+    assertThat(ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4")))["changed"]).isEqualTo(false)
+    assertThat(post("/api/approvables/$ap/revise", mapOf("revision" to "3")).code).isEqualTo(409) // never reused
+    val v = ok(get("/api/approvables/$ap"))
+    assertThat(v.list("revisions").map { it["revision"] }).containsExactly("3", "4")
+    assertThat(v.list("revisions").map { it["context"] }).containsExactly("because", "threshold 20 -> 16")
+    assertThat(v.list("revisions")[1]["dismissed"]).isEqualTo(2.0)
+    assertThat(v.list("approvals").map { it["superseded"] }).containsExactly(true, true)
+    assertThat(v.list("approvals").map { it["revision"] }).containsExactly("3", "3")
+    assertThat(ok(get("/api/entities/get?target=$pc/40"))["revision"]).isEqualTo("4")
+
+    ok(post("/api/approvables/$ap/approve", user = "bob")); ok(post("/api/approvables/$ap/approve", user = "carol"))
+    assertThat(post("/api/approvables/$ap/execute", mapOf("revision" to "3")).code).isEqualTo(409) // about to apply what nobody approved
+    assertThat(ok(post("/api/approvables/$ap/execute", mapOf("revision" to "4")))["changed"]).isEqualTo(true)
+    assertThat(post("/api/approvables/$ap/revise", mapOf("revision" to "5")).code).isEqualTo(409) // terminal
+
+    val audit = ok(get("/api/logs?target=$pc/40&source=tlc.approvals&order=asc")).list("entries").map { (it["message"] as String).substringAfter(": ") }
+    assertThat(audit).contains(
+      "approval requested by alice for @3 under AR-D (ALL_GROUPS)",
+      "revised @3 -> @4 by alice: threshold 20 -> 16; 2 approval(s) dismissed (AR-D on_revision=DISMISS)",
+      "APPROVED -> PENDING (revised to @4; 0 of 2 needed groups approved; still open: ENG, RISK)",
+      "APPROVED -> EXECUTED by alice at @4",
+    )
+
+    // KEEP: the approval stands, visibly given at the earlier revision. Labels are opaque; an unlabelled approvable can gain one.
+    val k = request("$pc/41", "AR-K")
+    ok(post("/api/approvables/$k/approve", user = "bob"))
+    val rk = ok(post("/api/approvables/$k/revise", mapOf("revision" to "c3d4e5f")))
+    assertThat(rk.obj("approvable")["approval_state"]).isEqualTo("APPROVED")
+    assertThat(rk.obj("approvable")["revision_seq"]).isEqualTo(2.0)
+    val kept = ok(get("/api/approvables/$k")).list("approvals").single()
+    assertThat(kept["stale"]).isEqualTo(true)
+    assertThat(kept["superseded"]).isEqualTo(false)
+    assertThat(kept["revision_seq"]).isEqualTo(1.0)
+    // changing what a revision does is a policy change like any other
+    assertThat(call("PATCH", "/api/approval-rules/AR-K", mapOf("on_revision" to "DISMISS"), "root").code).isEqualTo(409)
+  }
+
+  @Test
+  fun `threads hang on an approvable, and every thread and comment remembers the revision it was written at`() {
+    rule("AR-1", "ANY_NON_SELF_APPROVAL")
+    val ap = request("$pc/50", "AR-1", extra = mapOf("revision" to "3"))
+    val onRecord = ok(post("/api/threads", mapOf("target" to "$pc/50", "title" to "is 20 right?"), "bob"))
+    assertThat(onRecord["revision"]).isEqualTo("3")
+    val onAp = ok(post("/api/threads", mapOf("target" to ap, "title" to "blocking: needs a backtest"), "bob"))
+    assertThat(onAp["target"]).isEqualTo(ap)
+    assertThat(onAp["revision"]).isEqualTo("3")
+    val c1 = ok(post("/api/comments", mapOf("thread" to onAp["token"], "content" to "at 20 it never fires"), "bob"))
+    assertThat(c1["revision"]).isEqualTo("3")
+
+    ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4", "context" to "20 -> 16")))
+    val c2 = ok(post("/api/comments", mapOf("thread" to onAp["token"], "content" to "16 works"), "bob"))
+    assertThat(c2["revision"]).isEqualTo("4")
+    val t = ok(get("/api/threads/${onAp["token"]}"))
+    assertThat(t.obj("thread")["revision"]).isEqualTo("3") // where the thread was opened does not move
+    assertThat(t.list("comments").map { it["revision"] }).containsExactly("3", "4")
+    assertThat(ok(post("/api/comments", mapOf("thread" to onRecord["token"], "content" to "late"), "bob"))["revision"]).isEqualTo("4")
+    // a thread can be pinned to an older revision on purpose
+    assertThat(ok(post("/api/threads", mapOf("target" to "$pc/50", "title" to "about the old one", "revision" to "@3"), "bob"))["revision"]).isEqualTo("3")
+
+    assertThat(ok(get("/api/approvables/$ap")).list("threads").map { it["title"] }).containsExactly("blocking: needs a backtest")
+    assertThat(ok(get("/api/summary?target=$pc/50")).list("threads").map { it["title"] }).containsExactlyInAnyOrder("is 20 right?", "blocking: needs a backtest", "about the old one")
+  }
+
+  @Test
+  fun `checks gate approval alongside people, per revision, with the bound on the rule`() {
+    val checks = listOf(
+      mapOf("name" to "zeroed_groups", "description" to "rule groups whose flag rate drops to zero", "reporter" to "sentinel", "max" to 0),
+      mapOf("name" to "flag_rate_delta_pct", "min" to -15, "max" to 15, "unit" to "%"),
+      mapOf("name" to "lint"),
+    )
+    ok(post("/api/approval-rules", mapOf("token" to "AR-C", "description" to "threshold change", "requirement" to "ANY_NON_SELF_APPROVAL", "checks" to checks), "root"))
+    assertThat(post("/api/approval-rules", mapOf("token" to "AR-B", "description" to "x", "requirement" to "ANY_APPROVAL", "checks" to listOf(mapOf("name" to "a", "min" to 2, "max" to 1))), "root").code).isEqualTo(400)
+    val ap = request("$pc/60", "AR-C", extra = mapOf("revision" to "3"))
+    fun check(body: Map<String, Any?>, service: String? = "sentinel", user: String? = null) = post("/api/approvables/$ap/checks", body, user, service)
+    fun ev() = ok(get("/api/approvables/$ap")).obj("evaluation")
+    @Suppress("UNCHECKED_CAST") fun statuses() = (ev()["checks"] as List<Map<String, Any?>>).associate { it["name"] to it["status"] }
+
+    // people alone are not enough
+    ok(post("/api/approvables/$ap/approve", user = "bob"))
+    assertThat(state(ap)).isEqualTo("PENDING")
+    assertThat(ev()["approvals_satisfied"]).isEqualTo(true)
+    assertThat(ev()["summary"]).isEqualTo("approved by bob; checks 0/3: zeroed_groups MISSING, flag_rate_delta_pct MISSING, lint MISSING")
+    assertThat(post("/api/approvables/$ap/execute").code).isEqualTo(409)
+
+    assertThat(check(mapOf("name" to "lint", "status" to "PASS"), service = null, user = "alice").code).isEqualTo(400) // a person can't vouch for a machine
+    assertThat(check(mapOf("name" to "zeroed_groups", "value" to 0), service = "backtester").code).isEqualTo(403) // not the named reporter
+    assertThat(check(mapOf("name" to "zeroed_groups", "status" to "PASS")).code).isEqualTo(400) // bounded: the value decides
+    assertThat(check(mapOf("name" to "lint")).code).isEqualTo(400)
+    assertThat(check(mapOf("name" to "lint", "status" to "PASS", "revision" to "2")).code).isEqualTo(409) // a result for another revision
+    ok(check(mapOf("name" to "lint", "status" to "PENDING", "url" to "https://ci.example/1")))
+    ok(check(mapOf("name" to "lint", "status" to "PASS"), service = "ci"))
+    ok(check(mapOf("name" to "zeroed_groups", "value" to 0)))
+    // the reporter says PASS; the rule's bound says otherwise
+    val fail = ok(check(mapOf("name" to "flag_rate_delta_pct", "value" to -22.5, "status" to "PASS", "summary" to "30d backtest")))
+    assertThat(fail.obj("approvable")["approval_state"]).isEqualTo("PENDING")
+    assertThat(statuses()).isEqualTo(mapOf("zeroed_groups" to "PASS", "flag_rate_delta_pct" to "FAIL", "lint" to "PASS"))
+    ok(check(mapOf("name" to "coverage", "status" to "FAIL"))) // not named by the rule: shown, not gating
+    val pass = ok(check(mapOf("name" to "flag_rate_delta_pct", "value" to 15)))
+    assertThat(pass.obj("approvable")["approval_state"]).isEqualTo("APPROVED")
+    assertThat(statuses()["coverage"]).isEqualTo("FAIL")
+
+    // a later failure on the same revision reopens it; a new revision clears every result (bob's approval too: DISMISS)
+    ok(check(mapOf("name" to "zeroed_groups", "value" to 2)))
+    assertThat(state(ap)).isEqualTo("PENDING")
+    ok(check(mapOf("name" to "zeroed_groups", "value" to 0)))
+    assertThat(state(ap)).isEqualTo("APPROVED")
+    ok(post("/api/approvables/$ap/revise", mapOf("revision" to "4")))
+    assertThat(statuses().values.toSet()).isEqualTo(setOf("MISSING"))
+    assertThat(ok(get("/api/approvables/$ap")).list("check_reports").map { it["revision"] }.toSet()).isEqualTo(setOf("3"))
+    ok(post("/api/approvables/$ap/approve", user = "bob"))
+    for (c in listOf(mapOf("name" to "lint", "status" to "PASS"), mapOf("name" to "zeroed_groups", "value" to 0), mapOf("name" to "flag_rate_delta_pct", "value" to 3.5))) ok(check(c))
+    assertThat(ok(post("/api/approvables/$ap/execute", mapOf("revision" to "4")))["changed"]).isEqualTo(true)
+    assertThat(check(mapOf("name" to "lint", "status" to "FAIL")).code).isEqualTo(409)
+
+    val audit = ok(get("/api/logs?target=$pc/60&source=tlc.approvals&order=asc")).list("entries").map { (it["message"] as String).substringAfter(": ") }
+    assertThat(audit).contains(
+      "check flag_rate_delta_pct FAIL at @3 by svc:sentinel (-22.5 %; allowed -15..15 %; 30d backtest)",
+      "check coverage FAIL at @3 by svc:sentinel [not required by AR-C]",
+      "PENDING -> APPROVED (check flag_rate_delta_pct PASS; approved by bob; checks 3/3 passed)",
+      "APPROVED -> PENDING (check zeroed_groups FAIL; approved by bob; checks 2/3: zeroed_groups FAIL)",
+    )
+
+    // a notify-only rule with a check waits for the check, and nobody is asked
+    member("eng", "dave")
+    ok(post("/api/approval-rules", mapOf("token" to "AR-N", "description" to "fyi", "requirement" to "SLACK_NOTIFICATION", "groups" to listOf(grp("ENG", "eng", slack = "#eng")), "checks" to listOf(mapOf("name" to "lint"))), "root"))
+    val n = request("$pc/61", "AR-N")
+    assertThat(state(n)).isEqualTo("PENDING")
+    ok(post("/api/approvables/$n/checks", mapOf("name" to "lint", "status" to "PASS"), null, "ci"))
+    assertThat(state(n)).isEqualTo("APPROVED")
+    // checks are policy: changing them under an open approvable needs force
+    val open = request("$pc/62", "AR-C")
+    assertThat(call("PATCH", "/api/approval-rules/AR-C", mapOf("checks" to listOf<Any>()), "root").code).isEqualTo(409)
+    ok(post("/api/approvables/$open/approve", user = "bob"))
+    ok(call("PATCH", "/api/approval-rules/AR-C?force=true", mapOf("checks" to listOf<Any>()), "root"))
+    assertThat(state(open)).isEqualTo("APPROVED")
+  }
+
+  @Test
+  fun `agents request and comment like anyone, and approve only where the rule admits them`() {
+    member("eng", "bob"); member("eng", "reviewbot"); member("risk", "carol"); member("risk", "riskbot")
+    assertThat(call("PUT", "/api/agents/reviewbot?operator=bob", user = "alice").code).isEqualTo(403)
+    ok(call("PUT", "/api/agents/reviewbot?operator=bob&description=reads%20the%20backtest", user = "root"))
+    ok(call("PUT", "/api/agents/riskbot?operator=carol", user = "root"))
+    ok(call("PUT", "/api/agents/changebot?operator=alice", user = "root"))
+    assertThat(ok(get("/api/agents")).list("agents").map { it["name"] }).containsExactly("changebot", "reviewbot", "riskbot")
+    val groups = listOf(grp("ENG", "eng"), grp("RISK", "risk"))
+    rule("AR-P", "ALL_GROUPS", groups)
+    ok(post("/api/approval-rules", mapOf("token" to "AR-A", "description" to "agents count", "requirement" to "ALL_GROUPS", "groups" to groups, "agent_approvals" to "ALLOW"), "root"))
+
+    // people-only rule (the default): the agent is in ENG and still does not count
+    val p = request("$pc/70", "AR-P")
+    val refused = post("/api/approvables/$p/approve", user = "reviewbot")
+    assertThat(refused.code).isEqualTo(403)
+    assertThat(refused.text).contains("reviewbot is an agent and AR-P only counts approvals from people")
+    ok(post("/api/threads", mapOf("target" to p, "title" to "reviewbot: backtest looks thin"), "reviewbot")) // it can still say so
+
+    // agents admitted: reviewbot fills ENG, riskbot fills RISK
+    val a = request("$pc/71", "AR-A")
+    ok(post("/api/approvables/$a/approve", user = "reviewbot"))
+    val r = ok(post("/api/approvables/$a/approve", user = "riskbot"))
+    assertThat(r.obj("approvable")["approval_state"]).isEqualTo("APPROVED")
+    val given = ok(get("/api/approvables/$a")).list("approvals")
+    assertThat(given.map { it["agent"] }).containsExactly(true, true)
+    assertThat(given.map { it["operator"] }).containsExactly("bob", "carol")
+
+    // an agent and its operator are one voice: bob + reviewbot do not make two approvals
+    member("risk", "bob")
+    val b = request("$pc/72", "AR-A")
+    ok(post("/api/approvables/$b/approve", user = "reviewbot"))
+    ok(post("/api/approvables/$b/approve", user = "bob"))
+    assertThat(state(b)).isEqualTo("PENDING")
+    ok(post("/api/approvables/$b/approve", user = "carol"))
+    assertThat(state(b)).isEqualTo("APPROVED")
+
+    // nor may an agent approve its operator's request, or an operator their agent's
+    val own = request("$pc/73", "AR-A", user = "bob")
+    assertThat(post("/api/approvables/$own/approve", user = "reviewbot").text).contains("operated by bob, who requested it")
+    val byAgent = request("$pc/74", "AR-A", user = "changebot")
+    member("eng", "alice")
+    assertThat(post("/api/approvables/$byAgent/approve", user = "alice").text).contains("you operate changebot, which requested it")
+    ok(post("/api/approvables/$byAgent/approve", user = "bob")); ok(post("/api/approvables/$byAgent/approve", user = "carol"))
+    assertThat(ok(post("/api/approvables/$byAgent/execute", user = "changebot"))["changed"]).isEqualTo(true)
+
+    // turning agents off re-evaluates what they had approved
+    ok(call("PATCH", "/api/approval-rules/AR-A?force=true", mapOf("agent_approvals" to "DENY"), "root"))
+    assertThat(state(a)).isEqualTo("PENDING")
+    assertThat(ok(get("/api/logs?target=$pc/71&source=tlc.approvals&order=asc")).list("entries").map { (it["message"] as String).substringAfter(": ") })
+      .contains("approved by agent reviewbot (operated by bob) as ENG")
   }
 
   @Test

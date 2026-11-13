@@ -12,18 +12,22 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
   tlc tag add TARGET TAG [--at ISO] | remove TARGET TAG | is TARGET TAG [--at ISO] [--known-at ISO]
   tlc tag was TARGET TAG [--from ISO --to ISO] | of TARGET | targets TAG | log [--target T] [--tag G]
   tlc log add TARGET MESSAGE [--level WARN] [--source S] | ls [--target T --level L --source S -q TEXT] | tail [--target T]
-  tlc thread mk TITLE [--body B] [--target T] | ls [--target T] | show T-… | edit T-… [--title --body] | rm T-…
+  tlc thread mk TITLE [--body B] [--target T|AP-…] [--rev R] | ls [--target T] | show T-… | edit T-… [--title --body] | rm T-…
   tlc comment mk T-… CONTENT [--parent C-…] | ls T-… | show C-… | edit C-… CONTENT | rm C-… | like C-… | unlike C-… | likes C-…
   tlc group add GROUP LDAP [--admin] | rm GROUP LDAP | ls | contact GROUP [--slack '#chan'] [--email a@b] | contacts
-  tlc rule mk --requirement R --desc D [--token AR-…] [--min N] [--group ENG:trust-infra[:admins][:#chan][:a@b]]…
-              [--aspect availability[:notify][:downstream][:fallback=GROUP][:above=N][:unit=U]]… [--applies-to service/entity]… | ls | show | edit | rm
-  tlc ap mk TARGET RULE [--context C] [--client-id ID] [--requested-by LDAP] [--ratify [--ttl SECONDS]] [--impact ASPECT=N|?[:unit[:note]]]… (with --service) | ls [--target --state --awaiting LDAP|me]
+  tlc agent add NAME [--operator LDAP] [--desc D] | rm NAME | ls        which principals are agents, and who answers for each
+  tlc rule mk --requirement R --desc D [--token AR-…] [--min N] [--on-revision DISMISS|KEEP] [--agents ALLOW|DENY] [--group ENG:trust-infra[:admins][:#chan][:a@b]]…
+              [--aspect availability[:notify][:downstream][:fallback=GROUP][:above=N][:unit=U]]… [--applies-to service/entity]…
+              [--check NAME[:min=N][:max=N][:unit=U][:reporter=SERVICE][:desc=D]]… | ls | show | edit | rm
+  tlc ap mk TARGET RULE [--rev R] [--context C] [--client-id ID] [--requested-by LDAP] [--ratify [--ttl SECONDS]] [--impact ASPECT=N|?[:unit[:note]]]… (with --service) | ls [--target --state --awaiting LDAP|me]
   tlc own claim TARGET ASPECT GROUP [--role STAKEHOLDER] [--at ISO] | release TARGET ASPECT GROUP | transfer TARGET ASPECT FROM TO
   tlc own of TARGET [--at ISO] [--known-at ISO] | affirm GROUP [--target T] [--aspect A] | log [--target T --aspect A --owner G]
   tlc own coverage [--type service/entity] | gaps [--type --aspect --status UNOWNED,CONTESTED] | by GROUP | affected TARGET [--direction up]
   tlc own aspects [--type T] | expect service/entity ASPECT [--desc D]        (TARGET may be service/entity/* for a type-wide default)
   tlc edge mk FROM TO [--kind FEEDS] | ls [--target T] | rm FROM TO
-  tlc ap show AP-… | approve AP-… [--comment C] | unapprove AP-… | decline AP-… [--reason R] | execute AP-…
+  tlc ap show AP-… | approve AP-… [--comment C] [--rev R] | unapprove AP-… | decline AP-… [--reason R] | execute AP-… [--rev R]
+  tlc ap check AP-… NAME [--status PASS|FAIL|PENDING] [--value N] [--note SUMMARY] [--link URL] [--rev R]   (with --service) an automated check's result
+  tlc ap revise AP-… --rev R [--context C]      the target changed: R is the source service's label for the new version
   tlc feed status | fetch FEED [--after N] | follow FEED [--cursor-file F] | publish
   tlc summary TARGET | info | me
 """
@@ -166,8 +170,8 @@ def n_log(v):
 
 
 def n_thread(v):
-    cols = ["token", "title", "creator", "n=cached_comments", "target", "last=last_comment_at", "created_at"]
-    if v == "mk": emit(call("POST", "/api/threads", {"title": need(1, "thread mk TITLE"), "body": A.body, "target": A.target}), None, cols)
+    cols = ["token", "title", "creator", "n=cached_comments", "target", "rev=revision", "last=last_comment_at", "created_at"]
+    if v == "mk": emit(call("POST", "/api/threads", {"title": need(1, "thread mk TITLE"), "body": A.body, "target": A.target, "revision": A.rev}), None, cols)
     elif v == "ls": emit(call("GET", "/api/threads", target=A.target, creator=A.creator, limit=A.limit), "threads", cols)
     elif v == "show":
         r = call("GET", "/api/threads/" + need(1, "thread show T-…"))
@@ -200,6 +204,14 @@ def n_comment(v):
     else: bad(v)
 
 
+def n_agent(v):
+    cols = ["name", "operator", "description", "updated_at"]
+    if v in ("add", "mk"): emit(call("PUT", "/api/agents/" + need(1, "agent add NAME [--operator LDAP] [--desc D]"), operator=A.operator, description=A.desc), None, cols)
+    elif v == "rm": emit(call("DELETE", "/api/agents/" + need(1, "agent rm NAME")), None, ["ok"])
+    elif v == "ls": emit(call("GET", "/api/agents"), "agents", cols)
+    else: bad(v)
+
+
 def n_group(v):
     cols = ["group=directory_group", "ldap", "admin=is_admin", "updated_at"]
     if v in ("add", "mk"):
@@ -227,6 +239,14 @@ def parse_aspect(s):
             "fallback_group": next((x.split("=", 1)[1] for x in rest if x.startswith("fallback=")), None),
             "threshold": next((float(x.split("=", 1)[1]) for x in rest if x.startswith("above=")), None),
             "unit": next((x.split("=", 1)[1] for x in rest if x.startswith("unit=")), None)}
+
+
+def parse_check(s):
+    """flag_rate_delta_pct:min=-15:max=15:unit=%:reporter=sentinel:desc=overall flag rate change"""
+    name, *rest = s.split(":")
+    kv = dict(x.split("=", 1) for x in rest if "=" in x)
+    f = lambda k: float(kv[k]) if k in kv else None
+    return {"name": name, "min": f("min"), "max": f("max"), "unit": kv.get("unit"), "reporter": kv.get("reporter"), "description": kv.get("desc")}
 
 
 def num(x): return "?" if x is None else (str(int(x)) if float(x).is_integer() else str(x))
@@ -325,9 +345,14 @@ def n_rule(v):
             for g in x["groups"]:
                 print(f"    {g['group']:<8} <- {g['directory_group']}{' (admins only)' if g.get('admins_only') else ''}  {g.get('slack_channel', '')} {g.get('email', '')}".rstrip())
             if x.get("applies_to"): print(f"    only for {', '.join(x['applies_to'])}")
+            for k in x.get("checks", []):
+                b = "" if k.get("min") is None and k.get("max") is None else f" in {num(k['min']) if k.get('min') is not None else ''}..{num(k['max']) if k.get('max') is not None else ''}{' ' + k['unit'] if k.get('unit') else ''}"
+                print(f"    CHECK    <- {k['name']}{b}{' from ' + k['reporter'] if k.get('reporter') else ''}{'  ' + k['description'] if k.get('description') else ''}")
+            if x.get("agent_approvals") == "ALLOW": print("    agents in an approving group count (default: people only)")
+            if x.get("on_revision") == "KEEP": print("    on a new revision: approvals are KEPT (default: dismissed)")
             for a in x.get("aspects", []):
                 print(f"    {a['mode']:<8} <- owner of '{a['aspect']}'{' incl. downstream' if a['scope'] == 'DOWNSTREAM' else ''}{' (else ' + a['fallback_group'] + ')' if a.get('fallback_group') else ''}{' when impact > ' + num(a['threshold']) + (' ' + a['unit'] if a.get('unit') else '') if a.get('threshold') is not None else ''}")
-    body = lambda: {"token": A.token, "description": A.desc, "requirement": A.requirement, "min_groups": A.min, "groups": [parse_group(g) for g in A.group] if A.group else None, "aspects": [parse_aspect(a) for a in A.aspect] if A.aspect else None, "applies_to": A.applies_to}
+    body = lambda: {"token": A.token, "description": A.desc, "requirement": A.requirement, "min_groups": A.min, "groups": [parse_group(g) for g in A.group] if A.group else None, "aspects": [parse_aspect(a) for a in A.aspect] if A.aspect else None, "applies_to": A.applies_to, "on_revision": A.on_revision, "agent_approvals": A.agents, "checks": [parse_check(k) for k in A.check] if A.check else None}
     if v == "mk": show(call("POST", "/api/approval-rules", body()))
     elif v == "ls": show(call("GET", "/api/approval-rules"))
     elif v == "show": show(call("GET", "/api/approval-rules/" + need(1, "rule show AR-…")))
@@ -337,23 +362,31 @@ def n_rule(v):
 
 
 def n_ap(v):
-    cols = ["token", "state=approval_state", "target", "rule=approval_rule_token", "by=requested_by", "via=requested_via_service", "v=version", "created_at"]
+    cols = ["token", "state=approval_state", "target", "rev=revision", "rule=approval_rule_token", "by=requested_by", "via=requested_via_service", "v=version", "created_at"]
 
     def show(view):
         if A.json: return emit(view)
         a, e = view["approvable"], view["evaluation"]
-        print(f"{a['token']}  {a['approval_state']}  {a['target']}  rule={a['approval_rule_token']} ({e['requirement']})  by={a['requested_by']}{' for ' + a['acting_group'] if a.get('acting_group') else ''}  v{int(a['version'])}")
+        print(f"{a['token']}  {a['approval_state']}  {a['target']}{'@' + a['revision'] if a.get('revision') else ''}  rule={a['approval_rule_token']} ({e['requirement']})  by={a['requested_by']}{' for ' + a['acting_group'] if a.get('acting_group') else ''}  v{int(a['version'])}")
         if a.get("mode") == "RATIFY": print("  BREAK-GLASS: already done; " + {"ACTED": f"reverts {short(a['expires_at'])} unless ratified", "RATIFIED": "ratified, it stands", "REVERTED": "NOT ratified -> the source service must undo it"}[a["approval_state"]])
         if a.get("approval_context"): print(f"  why: {a['approval_context']}")
         print(f"  {int(e['have'])}/{int(e['needed'])}  {e['summary']}")
         for g in e["groups"]:
             print(f"    {g['group']:<8} {('✓ ' + g['satisfied_by']) if g.get('satisfied_by') else '·':<12} candidates={','.join(g['candidates']) or '-'}  <- {g['directory_group']}{' admins' if g['admins_only'] else ''}")
+        for k in e.get("checks", []):
+            v_ = "" if k.get("value") is None else num(k["value"]) + (" " + k["unit"] if k.get("unit") else "")
+            print(f"    check {k['name']:<22} {k['status']:<8} {v_:<10} {('allowed ' + k['bound']) if k.get('bound') else '':<20} {k.get('reported_by') or '-'}{'' if k['required'] else '  (not required)'}{'  “' + k['summary'] + '”' if k.get('summary') else ''}")
         for i in view.get("impacts", []):
             print(f"    impact {i['aspect']:<12} {(num(i.get('magnitude')) if i['declared'] else 'undeclared') + (' ' + i['unit'] if i.get('unit') else ''):<16} {(i.get('rule_mode') or '-') + ' -> ' + i['effect'] if i.get('rule_mode') != i['effect'] else i['effect']:<18} {i['reason']}{'  “' + i['note'] + '”' if i.get('note') else ''}")
         for p in view.get("parties", []):
             print(f"    party {p['directory_group']:<10} {p['mode']:<7} {','.join(p['aspects']):<24} {p['status']:<11} {p['source']:<8} via {','.join(p['via'])}")
+        revs = view.get("revisions", [])
+        if len(revs) > 1 or a.get("revision"):
+            for x in revs:
+                print(f"  revision {('@' + x['revision']) if x.get('revision') else '#' + str(int(x['seq'])):<10} {short(x['created_at'])} by {x['revised_by']}{'  dismissed ' + str(int(x['dismissed'])) + ' approval(s)' if x.get('dismissed') else ''}{'  “' + x['context'] + '”' if x.get('context') else ''}")
         for x in view.get("approvals", []):
-            print(f"  approval {x['approved_by']:<10} {short(x['approved_at'])} via={','.join(x['via_groups']) or '-'}{'  WITHDRAWN ' + short(x['unapproved_at']) if x.get('unapproved_at') else ''}{'  “' + x['comment'] + '”' if x.get('comment') else ''}")
+            at = ('@' + x['revision']) if x.get('revision') else ''
+            print(f"  approval {x['approved_by'] + (' (agent of ' + (x.get('operator') or '?') + ')' if x.get('agent') else ''):<10} {short(x['approved_at'])} {at:<6} via={','.join(x['via_groups']) or '-'}{'  SUPERSEDED ' + short(x['unapproved_at']) if x.get('superseded') else '  WITHDRAWN ' + short(x['unapproved_at']) if x.get('unapproved_at') else '  STALE (kept from an earlier revision)' if x.get('stale') else ''}{'  “' + x['comment'] + '”' if x.get('comment') else ''}")
         if view.get("you"): print(f"  you ({A.user}): {'may approve' if view['you']['allowed'] else 'may not approve'} — {view['you']['reason']}")
         for k in ("approved_at", "executed_at", "declined_at"):
             if a.get(k): print(f"  {k}={short(a[k])}" + (f" by {a['executed_by']}" if k == "executed_at" else f" by {a['declined_by']}: {a.get('decline_reason', '')}" if k == "declined_at" else ""))
@@ -361,18 +394,22 @@ def n_ap(v):
     def result(r):
         if A.json: return emit(r)
         a, e = r["approvable"], r["evaluation"]
-        print(f"changed={cell(r['changed'])}  {a['token']}  {a['approval_state']}  {int(e['have'])}/{int(e['needed'])}  {e['summary']}")
+        print(f"changed={cell(r['changed'])}  {a['token']}{'@' + a['revision'] if a.get('revision') else ''}  {a['approval_state']}  {int(e['have'])}/{int(e['needed'])}  {e['summary']}")
 
     if v == "mk":
         t, r = need(2, "ap mk TARGET RULE")
-        show(call("POST", "/api/approvables", {"target": t, "rule": r, "context": A.context, "client_id": A.client_id, "requested_by": A.requested_by, "mode": "RATIFY" if A.ratify else None, "ttl_seconds": A.ttl, "impacts": [parse_impact(i) for i in A.impact] if A.impact else None}))
+        show(call("POST", "/api/approvables", {"target": t, "rule": r, "context": A.context, "client_id": A.client_id, "requested_by": A.requested_by, "mode": "RATIFY" if A.ratify else None, "ttl_seconds": A.ttl, "impacts": [parse_impact(i) for i in A.impact] if A.impact else None, "revision": A.rev}))
     elif v == "ls": emit(call("GET", "/api/approvables", target=A.target, state=A.state, rule=A.rule, awaiting=A.awaiting, limit=A.limit), "approvables", cols)
     elif v == "show": show(call("GET", "/api/approvables/" + need(1, "ap show AP-…")))
-    elif v == "approve": result(call("POST", f"/api/approvables/{need(1, 'ap approve AP-…')}/approve", {"comment": A.comment}))
+    elif v == "approve": result(call("POST", f"/api/approvables/{need(1, 'ap approve AP-…')}/approve", {"comment": A.comment, "revision": A.rev}))
+    elif v == "check":
+        ap, name = need(2, "ap check AP-… NAME [--status PASS|FAIL|PENDING] [--value N] [--note SUMMARY] [--link URL] [--rev R]   (with --service)")
+        result(call("POST", f"/api/approvables/{ap}/checks", {"name": name, "status": A.status, "value": A.value, "summary": A.note, "url": A.link, "revision": A.rev}))
+    elif v == "revise": result(call("POST", f"/api/approvables/{need(1, 'ap revise AP-… --rev R')}/revise", {"revision": A.rev, "context": A.context}))
     elif v == "unapprove": result(call("POST", f"/api/approvables/{need(1, 'ap unapprove AP-…')}/unapprove"))
     elif v == "decline": result(call("POST", f"/api/approvables/{need(1, 'ap decline AP-…')}/decline", {"reason": A.reason}))
     elif v == "execute":
-        r = call("POST", f"/api/approvables/{need(1, 'ap execute AP-…')}/execute")
+        r = call("POST", f"/api/approvables/{need(1, 'ap execute AP-…')}/execute", {"revision": A.rev})
         result(r)
         if not A.json: sys.exit(0 if r["changed"] else 3)  # 3 = someone else already claimed it
     else: bad(v)
@@ -403,7 +440,7 @@ def bad(v):
     sys.exit(f"tlc: unknown verb '{v}' (see tlc --help)")
 
 
-NOUNS = {"type": n_type, "entity": n_entity, "tag": n_tag, "log": n_log, "thread": n_thread, "comment": n_comment, "group": n_group, "rule": n_rule, "ap": n_ap, "approvable": n_ap, "feed": n_feed, "own": n_own, "ownership": n_own, "edge": n_edge}
+NOUNS = {"type": n_type, "entity": n_entity, "tag": n_tag, "log": n_log, "thread": n_thread, "comment": n_comment, "group": n_group, "agent": n_agent, "rule": n_rule, "ap": n_ap, "approvable": n_ap, "feed": n_feed, "own": n_own, "ownership": n_own, "edge": n_edge}
 
 
 def main():
@@ -417,12 +454,14 @@ def main():
     p.add_argument("verb", nargs="?")
     p.add_argument("args", nargs="*")
     for f in ("desc", "url-template", "name", "type", "q", "at", "known-at", "to", "note", "target", "tag", "level", "source", "body", "title", "creator", "parent",
-              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "slack", "email"):
+              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "slack", "email", "rev", "on-revision", "link", "operator", "agents"):
         p.add_argument(("-q" if f == "q" else "--" + f), default=None)
     p.add_argument("--from", dest="from_", default=None)
     p.add_argument("--group", action="append")
     p.add_argument("--aspect", action="append")
     p.add_argument("--impact", action="append")
+    p.add_argument("--check", action="append")
+    p.add_argument("--value", type=float, default=None)
     p.add_argument("--applies-to", action="append", help="service/entity; repeatable. `--applies-to ""` on edit clears it")
     for f in ("limit", "min", "after", "ttl"): p.add_argument("--" + f, type=int, default=None)
     for f in ("all", "admin", "force", "once", "ratify"): p.add_argument("--" + f, action="store_true")

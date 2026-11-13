@@ -19,11 +19,12 @@ The company runs a fraud rule engine and has a Trust org split into five teams.
 
 ## Records
 
-```
-signals/velocity_24h ──FEEDS──▶ rules/ATO_VELOCITY ──HOOKS──▶ hooks/freeze_account
-                     └─FEEDS──▶ rules/VEL_2
-signals/geo_mismatch ──FEEDS──▶ rules/GEO_1 ────────HOOKS──▶ hooks/freeze_account
-                     └─FEEDS──▶ rules/LEGACY_GEO
+```mermaid
+flowchart LR
+  v24["signals/velocity_24h"] -- FEEDS --> ato["rules/ATO_VELOCITY"] -- HOOKS --> fz["hooks/freeze_account"]
+  v24 -- FEEDS --> vel2["rules/VEL_2"]
+  geo["signals/geo_mismatch"] -- FEEDS --> geo1["rules/GEO_1"] -- HOOKS --> fz
+  geo -- FEEDS --> lg["rules/LEGACY_GEO"]
 ```
 
 | record | is | why it is in the seed |

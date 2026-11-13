@@ -2,14 +2,18 @@
 
 > Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
 
+```mermaid
+stateDiagram-v2
+  direction LR
+  PENDING --> APPROVED: approve (requirement met)
+  APPROVED --> PENDING: unapprove (no longer met)
+  APPROVED --> EXECUTED: execute (claim)
+  PENDING --> DECLINED: decline
+  APPROVED --> DECLINED: decline
 ```
-                  approve (requirement met)            execute (claim)
-   ┌─────────┐ ─────────────────────────────▶ ┌──────────┐ ───────────────▶ ┌──────────┐
-   │ PENDING │                                │ APPROVED │                  │ EXECUTED │
-   └─────────┘ ◀───────────────────────────── └──────────┘                  └──────────┘
-        │        unapprove (no longer met)          │
-        └──────────────── decline ──────────────────┴──────────────────────▶  DECLINED
-```
+
+The shape comes from the [`# approvals` section of the 2020 note](2020_scribble.md#approvals): approvable,
+approvals, approval rule, rule-to-group. [decisions.md](decisions.md#approvals) says how each bullet was read.
 
 | piece | is |
 |---|---|

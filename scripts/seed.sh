@@ -67,9 +67,24 @@ C=$(t --as carol --json comment mk "$T" "risk is fine with 20 if we alert at 16"
 t --as dave comment mk "$T" "unrelated: can we rename the rule?" >/dev/null
 t --as bob comment like "$C" >/dev/null; t --as alice comment like "$C" >/dev/null
 t --as dave thread mk "canary timeout — infra or us?" --target $E >/dev/null
-AP=$(t --as alice --json ap mk $E AR-6392 --context "threshold 12 -> 20 on ATO_VELOCITY.velocity_24h; backtest attached" | tok)
-t --as bob ap approve "$AP" --comment "eng ok" >/dev/null
-AP2=$(t --as alice --json ap mk sentinel/proposed_changes/1235 AR-1001 --context "rule has not fired since 2024" | tok)
+# The main scenario: 1234 is reviewed at @3, changed in response, and is now waiting at @4.
+t --as "$ADMIN" rule mk --token AR-6400 --requirement MIN_GROUPS --min 2 --desc "raise a rule threshold" --group 'ENG:trust-infra:#trust-infra-oncall' --group 'RISK:trust-risk' --group 'LEGAL:trust-legal:legal@example.com' \
+  --check 'zeroed_groups:max=0:unit=groups:reporter=sentinel:desc=rule groups whose flag rate drops to zero' --check 'flag_rate_delta_pct:min=-15:max=15:unit=%:reporter=sentinel:desc=change in overall flag rate, 30d backtest' >/dev/null
+t --as "$ADMIN" agent add reviewbot --operator dave --desc "reads the backtest and the diff; comments, and approves where a rule lets it" >/dev/null
+t --as "$ADMIN" group add trust-infra reviewbot >/dev/null
+AP=$(t --service sentinel --json ap mk $E AR-6400 --requested-by alice --rev 3 --context "threshold 12 -> 20 on ATO_VELOCITY.velocity_24h; backtest attached" | tok)
+t --service sentinel ap check "$AP" zeroed_groups --value 0 >/dev/null
+t --service sentinel ap check "$AP" flag_rate_delta_pct --value -22.5 --note "30d backtest: holds drop from 4.0% to 3.1%" >/dev/null
+t --as bob ap approve "$AP" --comment "eng ok" --rev 3 >/dev/null
+TA=$(t --as carol --json thread mk "20 loses a fifth of the holds" --body "flag_rate_delta_pct is -22.5 at 20. risk can't sign that." --target "$AP" | tok)
+t --as reviewbot comment mk "$TA" "backtest by segment: new accounts account for all of the drop; 16 keeps them" >/dev/null
+t --as alice comment mk "$TA" "ok, going to 16" >/dev/null
+t --service sentinel ap revise "$AP" --rev 4 --context "threshold 12 -> 16 (was 20) on ATO_VELOCITY.velocity_24h" >/dev/null
+t --service sentinel ap check "$AP" flag_rate_delta_pct --value -6.2 --note "30d backtest at 16" --link https://sentinel.example/backtests/9917 >/dev/null
+t --service sentinel ap check "$AP" zeroed_groups --status PENDING >/dev/null
+t --as carol comment mk "$TA" "-6.2 is fine. approving @4" >/dev/null
+t --as carol ap approve "$AP" --rev 4 >/dev/null
+AP2=$(t --as alice --json ap mk sentinel/proposed_changes/1235 AR-1001 --rev 1 --context "rule has not fired since 2024" | tok)
 t --as bob ap approve "$AP2" >/dev/null; t --as alice ap execute "$AP2" >/dev/null
 t --as dave ap mk sentinel/proposed_changes/1236 AR-2002 --context "comment-only change" >/dev/null
 echo "seeded. console: $TLC_URL/#target=$E   embed demo: $TLC_URL/demo"
