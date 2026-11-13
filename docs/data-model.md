@@ -2,7 +2,7 @@
 
 > Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](example-world.md).
 
-23 migrations (one statement each), 22 tables, in `src/main/resources/migrations/`. MySQL 8+/9
+40 migrations (one statement each), 26 tables, in `src/main/resources/migrations/`. MySQL 8+/9
 (CHECK constraints and stored generated columns are relied on).
 
 ## Conventions
@@ -16,6 +16,10 @@
 | soft delete | `deleted_at_ms` NULL |
 
 All times are epoch milliseconds in the database and ISO-8601 UTC on the wire (inputs accept either).
+
+`v028`–`v040` add revisions (`v030` backfills one `approvable_revisions` row per existing approvable),
+revision stamps on threads and comments, checks and agents. All additive; existing rules read
+`DISMISS` / `DENY`.
 
 Token prefixes: `ET-` type · `E-` entity · `U-` tlcer · `TG-` tag · `TGG-` tagging · `T-` thread ·
 `C-` comment · `L-` like · `AR-` rule ([`AR-6392`](example-world.md#AR-6392): 4 digits when generated, or caller-chosen) ·
@@ -42,6 +46,9 @@ erDiagram
   external_entity_types ||--o{ ownerships : "1:N (type-wide)"
   external_entities ||--o{ ownerships : "1:N"
   approvables ||--o{ approvable_parties : "1:N"
+  approvables ||--o{ approvable_revisions : "1:N"
+  approvables ||--o{ approvable_checks : "1:N (per revision)"
+  approval_rules ||--o{ approval_rule_checks : "1:N"
   external_entity_types {
     string source_service "UNIQUE with source_entity"
     string source_entity
@@ -60,23 +67,25 @@ erDiagram
   }
   sequences {
   }
+  agents {
+  }
 ```
 
 | table | conventions | columns beyond them | keys / invariants |
 |---|---|---|---|
 | `external_entity_types` | icuvt, soft | `source_service`, `source_entity`, `description`, `url_template` | UNIQUE (service, entity) |
-| `external_entities` | icuvt, soft | `external_entity_type_id`, `source_entity_id` (≤191), `display_name` | UNIQUE (type, source id) |
+| `external_entities` | icuvt, soft | `external_entity_type_id`, `source_entity_id` (≤191), `display_name`, `revision` (latest label TLC was told) | UNIQUE (type, source id) |
 | `tlcers` | icuvt | `ldap`, `display_name`, `last_seen_at_ms` | UNIQUE ldap |
 | `tags` | icuvt + effectivity | `tag_name`, `description`, `created_by` | UNIQUE tag_name |
 | `taggings` | icuvt + feed + effective_at | `taggable_id` (internal token) **xor** `external_entity_id`, `target_key`, `tag_id`, `operation`, `ldap`, `service`, `note` | CHECK exactly one target; CHECK op ∈ ADD/REMOVE; KEY (target_key, tag_id, effective_at, id); **append-only** |
 | `log_entries` | id, created_at | `timestamp_ms`, `level` (0–5), `message`, `source`, `external_entity_type_id`, `external_entity_id` | KEYs on (entity, ts), (type, ts), (ts); **append-only** |
-| `threads` | icuv t + feed, soft | `title`, `body`, `creator`, `subject_token` xor `external_entity_id` (or neither), `target_key`, `cached_comments`, `last_comment_at_ms` | KEY (target_key, id) |
-| `comments` | icuv + feed, soft | `comment_token`, `thread_id`, `parent_comment_id`, `thread_path`, `depth`, `content`, `author`, `commented_at_ms`, `edited_at_ms`, `cached_likes` | KEY (thread_id, thread_path) |
+| `threads` | icuv t + feed, soft | `title`, `body`, `creator`, `subject_token` xor `external_entity_id` (or neither), `target_key`, `target_revision`, `cached_comments`, `last_comment_at_ms` | KEY (target_key, id) |
+| `comments` | icuv + feed, soft | `comment_token`, `thread_id`, `parent_comment_id`, `thread_path`, `depth`, `content`, `author`, `commented_at_ms`, `edited_at_ms`, `cached_likes`, `target_revision` | KEY (thread_id, thread_path) |
 | `likes` | icuvt | `comment_id`, `liked_by`, `liked_at_ms`, `unliked_at_ms`, `active` (generated: 1 while open, else NULL) | UNIQUE (comment, liker, active) ⇒ one open episode |
-| `approval_rules` | icuvt, soft | `description`, `requirement`, `min_groups`, `created_by` | |
+| `approval_rules` | icuvt, soft | `description`, `requirement`, `min_groups`, `created_by`, `on_revision`, `agent_approvals` | CHECK on_revision ∈ DISMISS/KEEP, agent_approvals ∈ DENY/ALLOW |
 | `approval_rule_groups` | icuv | `approval_rule_token`, `group_name`, `directory_group`, `admins_only`, `slack_channel`, `email` | UNIQUE (rule, group) |
-| `approvables` | icuvt + feed | `external_entity_id`, `approval_context`, `approval_rule_token`, `approval_state`, `requested_by`, `requested_via_service`, `client_id`, `approved_at_ms`, `executed_at_ms`, `executed_by`, `declined_at_ms`, `declined_by`, `decline_reason` | CHECK state; UNIQUE client_id |
-| `approvals` | icuvt | `approvable_id`, `approvable_token`, `approved_by`, `approved_at_ms`, `unapproved_at_ms`, `via_groups`, `comment`, `active` (generated) | UNIQUE (approvable, approver, active) |
+| `approvables` | icuvt + feed | `external_entity_id`, `approval_context`, `approval_rule_token`, `approval_state`, `requested_by`, `requested_via_service`, `client_id`, `approved_at_ms`, `executed_at_ms`, `executed_by`, `declined_at_ms`, `declined_by`, `decline_reason`, `revision` (current label), `revision_seq` | CHECK state; UNIQUE client_id |
+| `approvals` | icuvt | `approvable_id`, `approvable_token`, `approved_by`, `approved_at_ms`, `unapproved_at_ms`, `via_groups`, `comment`, `active` (generated), `revision_seq`, `revision`, `superseded_by_seq`, `by_agent`, `operator` | UNIQUE (approvable, approver, active) |
 | `directory_memberships` | icuv | `directory_group`, `ldap`, `is_admin` | UNIQUE (group, ldap) — directory stand-in |
 | `notifications` | icuvt | `channel`, `destination`, `event`, `approvable_token`, `body`, `status`, `detail`, `attempts`, `sent_at_ms` | outbox; KEY (status, id) |
 | `sequences` | | `name`, `value`, `publishing_enabled` | one row per feed |
@@ -87,6 +96,10 @@ erDiagram
 | `approval_rule_aspects` | icuv | `approval_rule_token`, `aspect`, `mode`, `scope`, `fallback_group`, `threshold`, `unit` | UNIQUE (rule, aspect) |
 | `approval_rule_types` | id, created_at | `approval_rule_token`, `external_entity_type_id` | UNIQUE (rule, type) — `applies_to` |
 | `approvable_impacts` | id, created_at | `approvable_id`, `aspect`, `declared`, `magnitude` (NULL = unknown), `unit`, `note`, `rule_mode`, `threshold`, `effect`, `reason` | UNIQUE (approvable, aspect) — frozen at filing |
+| `approvable_revisions` | id, created_at | `approvable_id`, `seq`, `revision`, `context`, `revised_by`, `via_service`, `dismissed` | UNIQUE (approvable, seq); **append-only**: every version that was up for approval |
+| `approval_rule_checks` | icuv | `approval_rule_token`, `name`, `description`, `reporter`, `min_value`, `max_value`, `unit` | UNIQUE (rule, name) |
+| `approvable_checks` | id, created_at | `approvable_id`, `revision_seq`, `revision`, `name`, `status`, `value`, `summary`, `url`, `reported_by` | CHECK status ∈ PENDING/PASS/FAIL; KEY (approvable, seq, name, id); **append-only**, latest per (seq, name) counts |
+| `agents` | icuv | `name`, `operator`, `description` | UNIQUE name: directory stand-in, "is an agent" half |
 | `approvable_parties` | id, created_at | `approvable_id`, `directory_group`, `mode`, `aspects`, `status`, `source`, `via`, `slack_channel`, `email` | UNIQUE (approvable, group) — frozen at filing |
 
 `approvables` gained `mode` (`APPROVE` \| `RATIFY`), `expires_at_ms`, `acting_group` in `v023`, and

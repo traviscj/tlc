@@ -78,10 +78,40 @@ Each is cheap to revisit; the ones marked ⚑ are the ones most worth a second o
   declined / executed), not just notify-only ones. An `email` column sits beside it.
 - **EXECUTED** is set by an explicit, exactly-once *claim* from the requesting side; TLC never
   executes anything itself.
-- ⚑ **Rules are not versioned.** An approvable follows its rule by token; changing a rule's
+- ⚑ **Rules are not versioned** (approvables are: see below). An approvable follows its rule by token; changing a rule's
   requirement under open approvables is refused unless forced. Snapshotting the rule onto each
   approvable is the stricter alternative.
 - **"Directory group"** → looked up in a local stand-in table; the real directory is an integration point.
+
+## Revisions, checks, agents (not in the note; added when "approve what, exactly?" had no answer)
+
+Everything here is a default or a mechanism, not a policy: see the top of [approvals.md](approvals.md).
+
+- ⚑ **One approvable, many revisions**, rather than a new approvable per version. Keeps the request,
+  its discussion and its history under one token. Cost: parties and impacts stay as resolved at filing.
+- ⚑ **Revision labels are opaque and ordered by arrival.** TLC does not parse or compare them, so a
+  counter, a hash and a commit all work, and "is `b72c` after `a1f3`" is never TLC's question.
+- **`revision` is a field, not part of the target string.** `…/1234@3` is how it is written and shown;
+  parsing it out of `target` would break source ids that contain `@`.
+- ⚑ **`on_revision` defaults to `DISMISS`.** The safe end. `KEEP` exists because re-collecting
+  sign-offs for a typo has its own cost.
+- ⚑ **Approve and execute take the revision the caller means** and 409 on a mismatch, instead of
+  trusting that nothing moved between render and click.
+- ⚑ **Checks are reported, never run.** TLC has no access to the source service's data. The rule can
+  hold the bound, so the threshold is policy; the measurement is trusted the way declared impacts are.
+- ⚑ **Only services report checks, only principals approve.** A person cannot mark a check passed;
+  a service cannot approve.
+- ⚑ **No waiver of a failed check.** Edit the rule (forced) or revise the change. A waiver would be a
+  second approval path and wants its own rule.
+- **A check that never reports stays `MISSING` forever**; there is no timeout.
+- ⚑ **Agents are marked in TLC's directory stand-in, with an operator**, not inferred from a name or
+  a token claim. `agent_approvals` defaults to `DENY`.
+- ⚑ **An agent and its operator are one voice** on any one request. Stricter than treating the agent
+  as an independent reviewer; looser than never counting it.
+- ⚑ **Comments are stamped with a revision, never marked outdated.** TLC records; it does not judge
+  whether an old comment still applies.
+- **The requirement list is a menu** (`tlc.requirements` narrows it; the enum is where it grows),
+  not a claim that these seven are what approval means.
 
 ## Ownership (not in the note; added when "owner" turned out to be plural)
 
