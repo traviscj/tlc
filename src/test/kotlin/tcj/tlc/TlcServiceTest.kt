@@ -51,7 +51,7 @@ class TlcServiceTest {
     // MiskTestingServiceModule pins the clock (to 2018); the scenarios below are written against late 2026.
     clock.setNow(java.time.Instant.parse("2026-11-10T12:00:00Z"))
     db.tx { c ->
-      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks")) c.exec("DELETE FROM $t")
+      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks", "agents")) c.exec("DELETE FROM $t")
     }
     post("/api/entity-types", mapOf("source_service" to "sentinel", "source_entity" to "proposed_changes", "url_template" to "https://sentinel.example/pc/{id}"))
   }
@@ -536,6 +536,59 @@ class TlcServiceTest {
     ok(post("/api/approvables/$open/approve", user = "bob"))
     ok(call("PATCH", "/api/approval-rules/AR-C?force=true", mapOf("checks" to listOf<Any>()), "root"))
     assertThat(state(open)).isEqualTo("APPROVED")
+  }
+
+  @Test
+  fun `agents request and comment like anyone, and approve only where the rule admits them`() {
+    member("eng", "bob"); member("eng", "reviewbot"); member("risk", "carol"); member("risk", "riskbot")
+    assertThat(call("PUT", "/api/agents/reviewbot?operator=bob", user = "alice").code).isEqualTo(403)
+    ok(call("PUT", "/api/agents/reviewbot?operator=bob&description=reads%20the%20backtest", user = "root"))
+    ok(call("PUT", "/api/agents/riskbot?operator=carol", user = "root"))
+    ok(call("PUT", "/api/agents/changebot?operator=alice", user = "root"))
+    assertThat(ok(get("/api/agents")).list("agents").map { it["name"] }).containsExactly("changebot", "reviewbot", "riskbot")
+    val groups = listOf(grp("ENG", "eng"), grp("RISK", "risk"))
+    rule("AR-P", "ALL_GROUPS", groups)
+    ok(post("/api/approval-rules", mapOf("token" to "AR-A", "description" to "agents count", "requirement" to "ALL_GROUPS", "groups" to groups, "agent_approvals" to "ALLOW"), "root"))
+
+    // people-only rule (the default): the agent is in ENG and still does not count
+    val p = request("$pc/70", "AR-P")
+    val refused = post("/api/approvables/$p/approve", user = "reviewbot")
+    assertThat(refused.code).isEqualTo(403)
+    assertThat(refused.text).contains("reviewbot is an agent and AR-P only counts approvals from people")
+    ok(post("/api/threads", mapOf("target" to p, "title" to "reviewbot: backtest looks thin"), "reviewbot")) // it can still say so
+
+    // agents admitted: reviewbot fills ENG, riskbot fills RISK
+    val a = request("$pc/71", "AR-A")
+    ok(post("/api/approvables/$a/approve", user = "reviewbot"))
+    val r = ok(post("/api/approvables/$a/approve", user = "riskbot"))
+    assertThat(r.obj("approvable")["approval_state"]).isEqualTo("APPROVED")
+    val given = ok(get("/api/approvables/$a")).list("approvals")
+    assertThat(given.map { it["agent"] }).containsExactly(true, true)
+    assertThat(given.map { it["operator"] }).containsExactly("bob", "carol")
+
+    // an agent and its operator are one voice: bob + reviewbot do not make two approvals
+    member("risk", "bob")
+    val b = request("$pc/72", "AR-A")
+    ok(post("/api/approvables/$b/approve", user = "reviewbot"))
+    ok(post("/api/approvables/$b/approve", user = "bob"))
+    assertThat(state(b)).isEqualTo("PENDING")
+    ok(post("/api/approvables/$b/approve", user = "carol"))
+    assertThat(state(b)).isEqualTo("APPROVED")
+
+    // nor may an agent approve its operator's request, or an operator their agent's
+    val own = request("$pc/73", "AR-A", user = "bob")
+    assertThat(post("/api/approvables/$own/approve", user = "reviewbot").text).contains("operated by bob, who requested it")
+    val byAgent = request("$pc/74", "AR-A", user = "changebot")
+    member("eng", "alice")
+    assertThat(post("/api/approvables/$byAgent/approve", user = "alice").text).contains("you operate changebot, which requested it")
+    ok(post("/api/approvables/$byAgent/approve", user = "bob")); ok(post("/api/approvables/$byAgent/approve", user = "carol"))
+    assertThat(ok(post("/api/approvables/$byAgent/execute", user = "changebot"))["changed"]).isEqualTo(true)
+
+    // turning agents off re-evaluates what they had approved
+    ok(call("PATCH", "/api/approval-rules/AR-A?force=true", mapOf("agent_approvals" to "DENY"), "root"))
+    assertThat(state(a)).isEqualTo("PENDING")
+    assertThat(ok(get("/api/logs?target=$pc/71&source=tlc.approvals&order=asc")).list("entries").map { (it["message"] as String).substringAfter(": ") })
+      .contains("approved by agent reviewbot (operated by bob) as ENG")
   }
 
   @Test

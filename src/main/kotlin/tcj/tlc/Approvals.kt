@@ -24,6 +24,12 @@ import misk.web.actions.WebAction
 // =============================================================================== directory
 
 data class GroupContactDto(val directory_group: String, val slack_channel: String?, val email: String?)
+/**
+ * A principal that is software acting on its own judgement (a review agent, a triage bot), as
+ * opposed to a person or to a service relaying what a person did. It authenticates and joins
+ * directory groups like anyone else; this row is what marks it as an agent and says who answers for it.
+ */
+data class AgentDto(val name: String, /** The person accountable for it. Its approval never counts on that person's own request, nor beside theirs. */ val operator: String?, val description: String?, val updated_at: String)
 data class MembershipDto(val directory_group: String, val ldap: String, val is_admin: Boolean, val updated_at: String)
 
 /**
@@ -72,6 +78,28 @@ class Directory @Inject constructor(private val db: Db, private val clock: Clock
   }
 
   fun contacts(): List<GroupContactDto> = db.tx { c -> c.select("SELECT * FROM directory_groups ORDER BY directory_group") { GroupContactDto(it.getString("directory_group"), it.getString("slack_channel"), it.getString("email")) } }
+
+  fun putAgent(name: String, operator: String?, description: String?): AgentDto = db.tx { c ->
+    val now = clock.millis()
+    val n = name.trim().lowercase()
+    if (!GROUP_RE.matches(n)) throw BadRequestException("agent name must match ${GROUP_RE.pattern}")
+    c.exec(
+      """
+      INSERT INTO agents (created_at_ms, updated_at_ms, name, operator, description) VALUES (?,?,?,?,?)
+      ON DUPLICATE KEY UPDATE operator = VALUES(operator), description = VALUES(description), updated_at_ms = VALUES(updated_at_ms), version = version + 1
+      """.trimIndent(),
+      listOf(now, now, n, operator?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }, description?.take(512)),
+    )
+    agent(c, n)!!
+  }
+
+  fun removeAgent(name: String): Boolean = db.tx { c -> c.exec("DELETE FROM agents WHERE name = ?", listOf(name.lowercase())) > 0 }
+
+  fun agents(): List<AgentDto> = db.tx { c -> c.select("SELECT * FROM agents ORDER BY name") { AgentDto(it.getString("name"), it.getString("operator"), it.getString("description"), iso(it.getLong("updated_at_ms"))) } }
+
+  /** Non-null when [name] is registered as an agent. */
+  fun agent(c: Connection, name: String): AgentDto? =
+    c.select("SELECT * FROM agents WHERE name = ?", listOf(name)) { AgentDto(it.getString("name"), it.getString("operator"), it.getString("description"), iso(it.getLong("updated_at_ms"))) }.firstOrNull()
 
   /** directory_group -> is_admin, for one person. */
   fun memberOf(c: Connection, ldap: String): Map<String, Boolean> =
@@ -129,6 +157,8 @@ data class RuleDto(
    * withdrawn and must be given again. KEEP: they stand, each still showing the revision it was given at.
    */
   val on_revision: String = "DISMISS",
+  /** Whether an approval given by an agent counts. DENY: approvers must be people. ALLOW: an agent in an approving group counts like any member. */
+  val agent_approvals: String = "DENY",
   /** Automated assertions about the change that must hold, besides the people: see [RuleCheckDto]. */
   val checks: List<RuleCheckDto> = listOf(),
 )
@@ -176,6 +206,7 @@ private val GROUP_RE = Regex("[A-Za-z0-9][A-Za-z0-9_.-]{0,95}")
 /** A revision label is the source service's own: a counter, a content hash, a commit. TLC orders them by arrival. */
 private val REVISION_RE = Regex("[A-Za-z0-9][A-Za-z0-9_.+:-]{0,63}")
 private fun revisionLabel(s: String?): String? = s?.trim()?.removePrefix("@")?.takeIf { it.isNotEmpty() }?.also { if (!REVISION_RE.matches(it)) throw BadRequestException("revision must match ${REVISION_RE.pattern}") }
+private fun agentApprovals(s: String?): String? = s?.trim()?.uppercase()?.also { if (it !in setOf("DENY", "ALLOW")) throw BadRequestException("agent_approvals is DENY or ALLOW") }
 private fun onRevision(s: String?): String? = s?.trim()?.uppercase()?.also { if (it !in setOf("DISMISS", "KEEP")) throw BadRequestException("on_revision is DISMISS or KEEP") }
 
 // ================================================================================= engine
@@ -287,6 +318,9 @@ data class ApprovalDto(
   val superseded: Boolean = false,
   /** Still counted, but given at an earlier revision than the current one (on_revision is KEEP). */
   val stale: Boolean = false,
+  /** Given by an agent; [operator] is who answered for it at the time. */
+  val agent: Boolean = false,
+  val operator: String? = null,
 )
 /** One revision of an approvable: what was put up for approval, by whom, and how many approvals it displaced. */
 data class RevisionDto(val seq: Int, val revision: String?, val context: String?, val revised_by: String, val via_service: String?, val created_at: String, val dismissed: Int)
@@ -407,7 +441,7 @@ class ApprovalStore @Inject constructor(
     c.select("SELECT r.*, (SELECT COUNT(*) FROM approvables a WHERE a.approval_rule_token = r.token AND a.approval_state IN $OPEN) AS open_n FROM approval_rules r $where", args) { rs ->
       RuleDto(
         rs.getString("token"), rs.getString("description"), rs.getString("requirement"), rs.getInt("min_groups").takeUnless { rs.wasNull() }, listOf(),
-        rs.getString("created_by"), rs.getLong("open_n"), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("deleted_at_ms"), rs.getInt("version"), on_revision = rs.getString("on_revision"),
+        rs.getString("created_by"), rs.getLong("open_n"), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("deleted_at_ms"), rs.getInt("version"), on_revision = rs.getString("on_revision"), agent_approvals = rs.getString("agent_approvals"),
       )
     }.map { it.copy(groups = groupsOf(c, it.token), aspects = aspectsOf(c, it.token), applies_to = appliesTo(c, it.token), checks = checksOf(c, it.token)) }
 
@@ -444,7 +478,7 @@ class ApprovalStore @Inject constructor(
     }
   }
 
-  fun createRule(actor: Actor, token: String?, description: String, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>, aspects: List<RuleAspectDto> = listOf(), appliesTo: List<String> = listOf(), onRevision: String? = null, checks: List<RuleCheckDto> = listOf()): RuleDto = db.tx { c ->
+  fun createRule(actor: Actor, token: String?, description: String, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>, aspects: List<RuleAspectDto> = listOf(), appliesTo: List<String> = listOf(), onRevision: String? = null, checks: List<RuleCheckDto> = listOf(), agentApprovals: String? = null): RuleDto = db.tx { c ->
     tlcers.touch(c, actor)
     val req = Requirement.parse(requirement)
     val onRev = onRevision(onRevision) ?: "DISMISS"
@@ -459,7 +493,7 @@ class ApprovalStore @Inject constructor(
       throw ConflictException("approval rule $tok already exists")
     }
     val now = clock.millis()
-    c.insert("INSERT INTO approval_rules (created_at_ms, updated_at_ms, token, description, requirement, min_groups, created_by, on_revision) VALUES (?,?,?,?,?,?,?,?)", listOf(now, now, tok, description, req.name, n, actor.name, onRev))
+    c.insert("INSERT INTO approval_rules (created_at_ms, updated_at_ms, token, description, requirement, min_groups, created_by, on_revision, agent_approvals) VALUES (?,?,?,?,?,?,?,?,?)", listOf(now, now, tok, description, req.name, n, actor.name, onRev, agentApprovals(agentApprovals) ?: "DENY"))
     writeGroups(c, tok!!, groups)
     writeAspects(c, tok, asp)
     writeChecks(c, tok, normChecks(checks))
@@ -476,7 +510,7 @@ class ApprovalStore @Inject constructor(
    * under it would move the goalposts mid-flight, so that is a 409 unless [force]; with force,
    * every open approvable is re-evaluated in this transaction and may flip PENDING<->APPROVED.
    */
-  fun updateRule(actor: Actor, token: String, description: String?, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>?, force: Boolean, aspects: List<RuleAspectDto>? = null, appliesTo: List<String>? = null, onRevision: String? = null, checks: List<RuleCheckDto>? = null): RuleDto = db.tx { c ->
+  fun updateRule(actor: Actor, token: String, description: String?, requirement: String?, minGroups: Int?, groups: List<RuleGroupDto>?, force: Boolean, aspects: List<RuleAspectDto>? = null, appliesTo: List<String>? = null, onRevision: String? = null, checks: List<RuleCheckDto>? = null, agentApprovals: String? = null): RuleDto = db.tx { c ->
     c.select("SELECT id FROM approval_rules WHERE token = ? FOR UPDATE", listOf(token)) { it.getLong(1) }.firstOrNull() ?: throw NotFoundException("no approval rule '$token'")
     val old = rule(c, token)
     if (old.deleted_at != null) throw ConflictException("approval rule $token was deleted")
@@ -487,10 +521,11 @@ class ApprovalStore @Inject constructor(
     val n = validate(req, wantMin, newGroups, newAspects)
     val onRev = onRevision(onRevision) ?: old.on_revision
     val newChecks = checks?.let(::normChecks) ?: old.checks
-    val policyChanged = req.name != old.requirement || n != old.min_groups || newGroups != old.groups || newAspects != old.aspects || onRev != old.on_revision || newChecks != old.checks
+    val agents = agentApprovals(agentApprovals) ?: old.agent_approvals
+    val policyChanged = req.name != old.requirement || n != old.min_groups || newGroups != old.groups || newAspects != old.aspects || onRev != old.on_revision || newChecks != old.checks || agents != old.agent_approvals
     val open = c.select("SELECT id FROM approvables WHERE approval_rule_token = ? AND approval_state IN $OPEN ORDER BY id FOR UPDATE", listOf(token)) { it.getLong(1) }
     if (policyChanged && open.isNotEmpty() && !force) throw ConflictException("${open.size} approvable(s) are open under $token; pass force=true to change its requirement and re-evaluate them")
-    c.exec("UPDATE approval_rules SET description = COALESCE(?, description), requirement = ?, min_groups = ?, on_revision = ?, updated_at_ms = ?, version = version + 1 WHERE token = ?", listOf(description, req.name, n, onRev, clock.millis(), token))
+    c.exec("UPDATE approval_rules SET description = COALESCE(?, description), requirement = ?, min_groups = ?, on_revision = ?, agent_approvals = ?, updated_at_ms = ?, version = version + 1 WHERE token = ?", listOf(description, req.name, n, onRev, agents, clock.millis(), token))
     if (policyChanged) {
       writeGroups(c, token, newGroups)
       // Aspects apply to approvables filed from now on: open ones keep the parties they were filed with.
@@ -537,6 +572,7 @@ class ApprovalStore @Inject constructor(
       ApprovalDto(
         it.getString("token"), it.getString("approvable_token"), it.getString("approved_by"), iso(it.getLong("approved_at_ms")), ended, it.getString("via_groups").split(',').filter(String::isNotEmpty), it.getString("comment"),
         it.getString("revision"), seq, it.longOrNull("superseded_by_seq") != null, ended == null && currentSeq != null && seq < currentSeq,
+        it.getBoolean("by_agent"), it.getString("operator"),
       )
     }
 
@@ -612,7 +648,12 @@ class ApprovalStore @Inject constructor(
 
   private fun evaluate(c: Connection, r: Row, rule: RuleDto): Evaluation {
     val ruleGroups = rule.groups.map { it.group }.toSet()
-    val live = approvals(c, r.id, liveOnly = true).associate { it.approved_by to it.via_groups.filter(ruleGroups::contains).toSet() }
+    val all = approvals(c, r.id, liveOnly = true)
+    val names = all.map { it.approved_by }.toSet()
+    // An agent's approval is its operator's judgement at one remove: it does not count beside the operator's own,
+    // nor on the operator's request, nor at all once the rule stops admitting agents.
+    val live = all.filter { !it.agent || (rule.agent_approvals == "ALLOW" && it.operator !in names && it.operator != r.dto.requested_by) }
+      .associate { it.approved_by to it.via_groups.filter(ruleGroups::contains).toSet() }
     val ev = ApprovalEngine.evaluate(Requirement.valueOf(rule.requirement), rule.min_groups, rule.groups, live, r.dto.requested_by)
     val checks = checkEvals(c, r, rule)
     val required = checks.filter { it.required }
@@ -650,12 +691,16 @@ class ApprovalStore @Inject constructor(
   private fun canApprove(c: Connection, r: Row, rule: RuleDto, ldap: String): CanApprove {
     val req = Requirement.valueOf(rule.requirement)
     val via = entitled(c, rule, ldap)
+    val agent = directory.agent(c, ldap)
     fun no(why: String) = CanApprove(false, why, via)
     return when {
       r.dto.approval_state !in LIVE -> no("it is ${r.dto.approval_state}")
       req.notifyOnly -> no("${rule.token} is notification-only")
       r.dto.mode == "RATIFY" && ldap == r.dto.requested_by -> no("you pulled it; someone else has to ratify")
       req != Requirement.ANY_APPROVAL && ldap == r.dto.requested_by -> no("you requested it and ${rule.token} doesn't allow self-approval")
+      agent != null && rule.agent_approvals != "ALLOW" -> no("$ldap is an agent and ${rule.token} only counts approvals from people")
+      agent != null && agent.operator == r.dto.requested_by && req != Requirement.ANY_APPROVAL -> no("$ldap is operated by ${agent.operator}, who requested it")
+      req != Requirement.ANY_APPROVAL && directory.agent(c, r.dto.requested_by)?.operator == ldap -> no("you operate ${r.dto.requested_by}, which requested it")
       rule.groups.isNotEmpty() && via.isEmpty() -> no("you are not in an approving group of ${rule.token} (${rule.groups.joinToString { it.directory_group + if (it.admins_only) " admins" else "" }})")
       else -> CanApprove(true, if (via.isEmpty()) "anyone may approve" else "as ${via.joinToString()}", via)
     }
@@ -836,7 +881,7 @@ class ApprovalStore @Inject constructor(
 
   /** [revision]: the revision the approver looked at. If the approvable has moved on since, it is a 409 rather than an approval of something unread. */
   fun approve(actor: Actor, token: String, comment: String?, revision: String? = null): ActionResult = db.tx { c ->
-    val ldap = actor.requireHuman("approving")
+    val ldap = actor.ldap ?: throw BadRequestException("approving needs a named principal (a person or an agent), not a bare service: send $USER_HEADER")
     tlcers.touch(c, actor)
     val r = row(c, token, lock = true)
     val rule = ruleFor(c, r)
@@ -847,13 +892,14 @@ class ApprovalStore @Inject constructor(
       forbidden("can't approve $token: ${can.reason}")
     }
     if (approvals(c, r.id, liveOnly = true).any { it.approved_by == ldap }) return@tx result(c, token, false, rule)
+    val agent = directory.agent(c, ldap)
     val now = clock.millis()
     c.insert(
-      "INSERT INTO approvals (created_at_ms, updated_at_ms, token, approvable_id, approvable_token, approved_by, approved_at_ms, via_groups, comment, revision_seq, revision) VALUES (?,?,?,?,?,?,?,?,?,?,?)",
-      listOf(now, now, newToken("A"), r.id, token, ldap, now, can.via_groups.joinToString(","), comment, r.dto.revision_seq, r.dto.revision),
+      "INSERT INTO approvals (created_at_ms, updated_at_ms, token, approvable_id, approvable_token, approved_by, approved_at_ms, via_groups, comment, revision_seq, revision, by_agent, operator) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?)",
+      listOf(now, now, newToken("A"), r.id, token, ldap, now, can.via_groups.joinToString(","), comment, r.dto.revision_seq, r.dto.revision, agent != null, agent?.operator),
     )
     c.exec("UPDATE approvables SET updated_at_ms = ?, version = version + 1, feed_sync_id = NULL WHERE id = ?", listOf(now, r.id))
-    audit(c, r, LogLevel.INFO, "approved by $ldap${if (can.via_groups.isNotEmpty()) " as ${can.via_groups.joinToString()}" else ""}${r.dto.revision?.let { " at @$it" } ?: ""}")
+    audit(c, r, LogLevel.INFO, "approved by ${if (agent != null) "agent " else ""}$ldap${agent?.operator?.let { " (operated by $it)" } ?: ""}${if (can.via_groups.isNotEmpty()) " as ${can.via_groups.joinToString()}" else ""}${r.dto.revision?.let { " at @$it" } ?: ""}")
     reevaluate(c, r.id, rule, "approval by $ldap")
     result(c, token, true, rule)
   }
@@ -1043,7 +1089,8 @@ class Outbox @Inject constructor(private val db: Db, private val clock: Clock) {
 // ================================================================================ actions
 
 data class MembershipList(val memberships: List<MembershipDto>)
-data class RuleReq(val token: String?, val description: String?, val requirement: String?, val min_groups: Int?, val groups: List<RuleGroupDto>?, val aspects: List<RuleAspectDto>? = null, val applies_to: List<String>? = null, val on_revision: String? = null, val checks: List<RuleCheckDto>? = null)
+data class RuleReq(val token: String?, val description: String?, val requirement: String?, val min_groups: Int?, val groups: List<RuleGroupDto>?, val aspects: List<RuleAspectDto>? = null, val applies_to: List<String>? = null, val on_revision: String? = null, val checks: List<RuleCheckDto>? = null, val agent_approvals: String? = null)
+data class AgentList(val agents: List<AgentDto>)
 data class RuleList(val rules: List<RuleDto>)
 data class ApprovableReq(val target: String?, val rule: String?, val context: String?, val client_id: String?, val requested_by: String?, val mode: String? = null, val ttl_seconds: Long? = null, val impacts: List<ImpactReq>? = null, val revision: String? = null)
 data class GroupContacts(val groups: List<GroupContactDto>)
@@ -1067,13 +1114,23 @@ class DirectoryActions @Inject constructor(private val directory: Directory) : W
   @Get("/api/directory/contacts") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun contacts() = GroupContacts(directory.contacts())
 
+  /** Which principals are agents, and who operates each. */
+  @Get("/api/agents") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
+  fun agents() = AgentList(directory.agents())
+
+  @Put("/api/agents/{name}") @Authenticated(capabilities = [ADMIN]) @ResponseContentType(JSON)
+  fun putAgent(@PathParam name: String, @QueryParam operator: String?, @QueryParam description: String?) = directory.putAgent(name, operator, description)
+
+  @Delete("/api/agents/{name}") @Authenticated(capabilities = [ADMIN]) @ResponseContentType(JSON)
+  fun removeAgent(@PathParam name: String) = Ok(directory.removeAgent(name))
+
   @Delete("/api/directory/{group}/members/{ldap}") @Authenticated(capabilities = [ADMIN]) @ResponseContentType(JSON)
   fun remove(@PathParam group: String, @PathParam ldap: String) = Ok(directory.remove(group, ldap))
 }
 
 class RuleActions @Inject constructor(private val store: ApprovalStore, private val actors: Actors) : WebAction {
   @Post("/api/approval-rules") @Authenticated(capabilities = [ADMIN]) @RequestContentType(JSON) @ResponseContentType(JSON)
-  fun create(@RequestBody req: RuleReq) = store.createRule(actors.current(), req.token, req.description.required("description"), req.requirement.required("requirement"), req.min_groups, req.groups.orEmpty(), req.aspects.orEmpty(), req.applies_to.orEmpty(), req.on_revision, req.checks.orEmpty())
+  fun create(@RequestBody req: RuleReq) = store.createRule(actors.current(), req.token, req.description.required("description"), req.requirement.required("requirement"), req.min_groups, req.groups.orEmpty(), req.aspects.orEmpty(), req.applies_to.orEmpty(), req.on_revision, req.checks.orEmpty(), req.agent_approvals)
 
   @Get("/api/approval-rules") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun list(@QueryParam include_deleted: Boolean?) = RuleList(store.listRules(include_deleted == true))
@@ -1083,7 +1140,7 @@ class RuleActions @Inject constructor(private val store: ApprovalStore, private 
 
   @Patch("/api/approval-rules/{token}") @Authenticated(capabilities = [ADMIN]) @RequestContentType(JSON) @ResponseContentType(JSON)
   fun update(@PathParam token: String, @QueryParam force: Boolean?, @RequestBody req: RuleReq) =
-    store.updateRule(actors.current(), token, req.description, req.requirement, req.min_groups, req.groups, force == true, req.aspects, req.applies_to, req.on_revision, req.checks)
+    store.updateRule(actors.current(), token, req.description, req.requirement, req.min_groups, req.groups, force == true, req.aspects, req.applies_to, req.on_revision, req.checks, req.agent_approvals)
 
   @Delete("/api/approval-rules/{token}") @Authenticated(capabilities = [ADMIN]) @ResponseContentType(JSON)
   fun destroy(@PathParam token: String) = store.destroyRule(token)
