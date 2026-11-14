@@ -3,6 +3,8 @@
 One video per demo script. Left pane: the demo's terminal output as it runs. Right pane: the TLC console
 (`/?user=alice#target=…`) on the record that step is about, updating from the same server. 1920×1080, H.264, 8 fps, no audio.
 
+Playable in the browser, all nine on one page: <https://tcj.io/s/fhz0ztk3q0ijsl32cmd28v3n1jvl/> (copies of these files; `<name>.mp4` under that URL is each one directly).
+
 | recording | demo | length | size | the console is showing |
 |---|---|---:|---:|---|
 | [01-entities.mp4](01-entities.mp4) | `scripts/demos/01-entities.sh` | 0:20 | 0.4 MB | `sentinel/proposed_changes/e$RUN` appearing on first write, renamed, destroyed, revived |

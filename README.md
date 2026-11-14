@@ -122,6 +122,8 @@ Every endpoint: [docs/api.md](docs/api.md). Config, auth, deploy notes: [docs/op
 
 ## Demos
 
+All nine recordings on one page, playable in the browser: <https://tcj.io/s/fhz0ztk3q0ijsl32cmd28v3n1jvl/> (GitHub does not play the mp4s in `docs/recordings/` inline).
+
 | script | shows |
 |---|---|
 | `scripts/demos/01-entities.sh` | unregistered types refused; records vivify; soft destroy + revive · [recording](docs/recordings/01-entities.mp4) |
