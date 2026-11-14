@@ -1,9 +1,9 @@
 #!/usr/bin/env bash
 # The same service with nothing but curl: what an integration actually sends.
 set -euo pipefail
-U="${TLC_URL:-http://localhost:8790}"; RUN="$(date +%H%M%S)"; E="billing/invoices/inv-$RUN"
+U="${TLC_URL:-http://localhost:8790}"; RUN="${RUN:-$(date +%H%M%S)}"; E="billing/invoices/inv-$RUN"
 j() { python3 -m json.tool --compact 2>/dev/null || cat; echo; }
-c() { local who="$1" m="$2" p="$3"; shift 3; printf '\033[33m%s %s  (as %s)\033[0m\n' "$m" "$p" "$who" >&2; curl -s -X "$m" -H "X-TLC-User: $who" -H 'Content-Type: application/json' "$U$p" "$@"; }
+c() { local who="$1" m="$2" p="$3"; shift 3; [ "${TLC_DEMO_CMD_PACE:-0}" = 0 ] || sleep "$TLC_DEMO_CMD_PACE"; printf '\033[33m%s %s  (as %s)\033[0m\n' "$m" "$p" "$who" >&2; curl -s -X "$m" -H "X-TLC-User: $who" -H 'Content-Type: application/json' "$U$p" "$@"; }
 
 c "${TLC_ADMIN:-traviscj}" POST /api/entity-types -d '{"source_service":"billing","source_entity":"invoices","url_template":"https://billing.example/i/{id}"}' | j
 c alice POST /api/taggings/tag -d "{\"target\":\"$E\",\"tag\":\"disputed\",\"create_tag\":true,\"note\":\"customer emailed\"}" | j
