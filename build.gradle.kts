@@ -21,6 +21,7 @@ dependencies {
   implementation(libs.miskActions)
   implementation(libs.miskConfig)
   implementation(libs.miskCore)
+  implementation(libs.miskFeedz)
   implementation(libs.miskInject)
   implementation(libs.miskJdbc)
   implementation(libs.miskOidc)

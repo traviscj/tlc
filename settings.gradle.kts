@@ -17,3 +17,6 @@ if (oidcSibling.isDirectory) {
     gitRepository(uri("https://github.com/traviscj/misk-oidc.git")) { producesModule("tcj:misk-oidc") }
   }
 }
+
+// tcj:misk-feedz is not on GitHub yet: sibling checkout only.
+file("../misk-feedz").takeIf { it.isDirectory }?.let { includeBuild(it) }

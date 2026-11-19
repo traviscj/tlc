@@ -84,17 +84,22 @@ yet read `/api/me` to learn who that is.
 
 ## Background work
 
-One daemon thread (`tlc-background`), `scheduleWithFixedDelay`, so runs never overlap:
-1. publish feeds (assign `feed_sync_id` to changed rows);
-2. drain the notification outbox (≤100 per pass, 5 attempts each, then `FAILED`).
+Two daemon threads, each `scheduleWithFixedDelay` every `background_interval_ms`, so runs of one never overlap:
+- `feedz` (misk-feedz): publish feeds (assign `feed_sync_id` to changed rows). At startup it checks
+  that `sequences`, `feed_cursors` and every feed table have the columns it needs and refuses to
+  start otherwise.
+- `tlc-background`: revert unratified break-glass actions, then drain the notification outbox (≤100
+  per pass, 5 attempts each, then `FAILED`).
 
 Both are safe to run from several instances — the publisher serializes on the `sequences` row —
 but notification delivery would then be more-than-once more often. One instance is the design point.
 
 ## Watching it
 
-- `GET /_feeds/status` — `pending` should hover at 0; stuck > 0 with `publishing_enabled` means the
-  background loop is failing (see the service log).
+- `GET /_feeds/status`, or the page at `/_admin/feedz/` — `pending` should hover at 0; stuck > 0
+  with `publishing_enabled` means the publish loop is failing (see the service log). Cursors show
+  `lag` and when each last advanced; a cursor that is on, behind and not advancing is a stuck or dead
+  consumer. (In trusted-header mode open the page as `/_admin/feedz/?hdr.X-TLC-User=<you>`.)
 - `GET /api/notifications?status=PENDING` / `FAILED`.
 - `GET /api/info` — row counts.
 - The console at `/` shows all three.

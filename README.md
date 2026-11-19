@@ -115,7 +115,7 @@ The note is [`docs/2020_scribble.md`](docs/2020_scribble.md), kept as written.
 | iframe · thread\|comment × create/read/update/destroy × mk/ls/edit/rm · like | `/iframe`, `/api/threads`, `/api/comments`, `scripts/tlc` | [embedding](docs/embedding.md) |
 | approvable, approvals, approval rule, rules→groups | `Approvals.kt`, `v010`–`v015` | [approvals](docs/approvals.md) |
 | "alternatives to approval": Slack / email notification | `SLACK_NOTIFICATION` / `EMAIL_NOTIFICATION` requirements + outbox | [approvals](docs/approvals.md#notifications) |
-| "+ feed", "fsi, shard" | `Feeds.kt`, `/_feeds/fetch/{taggings,threads,comments,approvables,ownerships}` | [feeds](docs/feeds.md) |
+| "+ feed", "fsi, shard" | `Feeds.kt` on the `misk-feedz` library, `/_feeds/fetch/{taggings,threads,comments,approvables,ownerships}`, `/_admin/feedz/` | [feeds](docs/feeds.md) |
 | *(not in the note)* revisions of what is approved, comments per revision, automated checks, agents as approvers, a configurable requirement menu | `Approvals.kt`, `Comments.kt`, `v028`–`v040` | [approvals](docs/approvals.md) · [comments](docs/comments.md#on-a-request-and-at-a-revision) |
 | *(not in the note)* ownership per aspect, coverage, dependency edges, aspect-resolved rules, break-glass | `Ownership.kt`, `Approvals.kt`, `v017`–`v023` | [ownership](docs/ownership.md) |
 

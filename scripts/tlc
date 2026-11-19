@@ -28,7 +28,7 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
   tlc ap show AP-… | approve AP-… [--comment C] [--rev R] | unapprove AP-… | decline AP-… [--reason R] | execute AP-… [--rev R]
   tlc ap check AP-… NAME [--status PASS|FAIL|PENDING] [--value N] [--note SUMMARY] [--link URL] [--rev R]   (with --service) an automated check's result
   tlc ap revise AP-… --rev R [--context C]      the target changed: R is the source service's label for the new version
-  tlc feed status | fetch FEED [--after N] | follow FEED [--cursor-file F] | publish
+  tlc feed status | cursors | fetch FEED [--after N] | follow FEED [--cursor-file F] | publish
   tlc summary TARGET | info | me
 """
 import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
@@ -417,6 +417,7 @@ def n_ap(v):
 
 def n_feed(v):
     if v == "status": emit(call("GET", "/_feeds/status"), "feeds", ["feed", "sequence", "rows", "pending", "on=publishing_enabled"])
+    elif v == "cursors": emit(call("GET", "/_feeds/status"), "cursors", ["consumer", "feed", "shard", "of=shard_count", "token", "lag", "on=enabled", "advanced=last_advanced_at", "changed=updated_at"])
     elif v == "publish": emit(call("POST", "/_feeds/publish"), None, ["published"])
     elif v == "fetch": emit(call("GET", "/_feeds/fetch/" + need(1, "feed fetch FEED"), after=A.after, limit=A.limit))
     elif v == "follow":

@@ -53,6 +53,7 @@ class InfoActions @Inject constructor(
   private val approvals: ApprovalStore,
   private val logs: LogStore,
   private val ownership: OwnershipStore,
+  private val feeds: tcj.feedz.FeedRegistry,
 ) : WebAction {
   @Get("/api/info") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun info(): InfoDto {
@@ -73,7 +74,7 @@ class InfoActions @Inject constructor(
         EnumValue("REVERTED", "terminal; not ratified in time (or withdrawn) — the source service must undo it"),
       ),
       log_levels = LogLevel.entries.map { it.name },
-      feeds = FEEDS.keys.toList(),
+      feeds = feeds.names,
       token_prefixes = linkedMapOf("ET-" to "entity type", "E-" to "entity", "U-" to "tlcer", "TG-" to "tag", "TGG-" to "tagging", "T-" to "thread", "C-" to "comment", "L-" to "like", "AR-" to "approval rule", "AP-" to "approvable", "A-" to "approval", "N-" to "notification", "OW-" to "ownership claim", "EG-" to "edge"),
     )
   }

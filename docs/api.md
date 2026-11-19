@@ -108,8 +108,13 @@ States: `PENDING APPROVED EXECUTED DECLINED` (ask first) · `ACTED RATIFIED REVE
 | | | |
 |---|---|---|
 | GET | `/_feeds/fetch/{feed}?after=&limit=&shard=&shard_count=` | `{feed, entries, cursor}`; feeds: `taggings threads comments approvables ownerships` |
-| GET | `/_feeds/status` | |
+| GET | `/_feeds/fetch/{feed}?consumer=&limit=&shard=&shard_count=` | the same page shape, read from the consumer's server-side cursor; 409 while the cursor is disabled |
+| POST | `/_feeds/{feed}/cursors/{consumer}/commit?token=[&shard=]` | `{advanced}`; forward-only |
+| GET | `/_feeds/status` | `{now, feeds:[{feed, table, sequence, rows, pending, held, publishing_enabled}], cursors:[{consumer, feed, shard, shard_count, token, lag, enabled, created_at, updated_at, last_advanced_at, …}]}` |
 | POST(A) | `/_feeds/publish[?feed=]` · `/_feeds/{feed}/pause` · `/_feeds/{feed}/resume` | |
+| POST(A) | `/_feeds/{feed}/cursors/{consumer}/enable` · `/disable` · `/seek?token=` · `/reshard?shard_count=` (each but reshard takes `[shard=]`) | `{changed}` |
+| DELETE(A) | `/_feeds/{feed}/cursors/{consumer}` | `{changed}` |
+| GET | `/_admin/feedz/` | the feeds page (markup only; it calls the endpoints above) |
 
 ## Pages (no auth; they call the API as the viewer)
 

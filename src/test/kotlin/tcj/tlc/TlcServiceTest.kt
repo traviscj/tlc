@@ -37,7 +37,7 @@ class TlcServiceTest {
   @Inject lateinit var jetty: JettyService
   @Inject lateinit var db: Db
   @Inject lateinit var json: Json
-  @Inject lateinit var publisher: FeedPublisher
+  @Inject lateinit var publisher: tcj.feedz.FeedPublisher
   @Inject lateinit var dispatcher: NotificationDispatcher
   @Inject lateinit var clock: misk.time.FakeClock
   @Inject lateinit var approvals: ApprovalStore
@@ -51,7 +51,7 @@ class TlcServiceTest {
     // MiskTestingServiceModule pins the clock (to 2018); the scenarios below are written against late 2026.
     clock.setNow(java.time.Instant.parse("2026-11-10T12:00:00Z"))
     db.tx { c ->
-      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks", "agents")) c.exec("DELETE FROM $t")
+      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "feed_cursors", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks", "agents")) c.exec("DELETE FROM $t")
     }
     post("/api/entity-types", mapOf("source_service" to "sentinel", "source_entity" to "proposed_changes", "url_template" to "https://sentinel.example/pc/{id}"))
   }
@@ -81,7 +81,7 @@ class TlcServiceTest {
     }
   }
 
-  private fun get(path: String, user: String? = "alice") = call("GET", path, user = user)
+  private fun get(path: String, user: String? = "alice", service: String? = null) = call("GET", path, user = user, service = service)
   private fun post(path: String, body: Any? = null, user: String? = "alice", service: String? = null) = call("POST", path, body, user, service)
   private fun ok(r: Res): Res { assertThat(r.code).describedAs(r.text).isEqualTo(200); return r }
 
@@ -761,6 +761,32 @@ class TlcServiceTest {
     assertThat(st["publishing_enabled"]).isEqualTo(false)
     ok(post("/_feeds/taggings/resume", user = "root"))
     assertThat(publisher.publishAll("taggings")).isEqualTo(1)
+  }
+
+  @Test
+  fun `a source service can keep its feed position in TLC`() {
+    rule("AR-8", "ANY_NON_SELF_APPROVAL")
+    val ap = request("$pc/90", "AR-8")
+    val ap2 = request("$pc/91", "AR-8")
+    publisher.publishAll()
+
+    val page = ok(get("/_feeds/fetch/approvables?consumer=sentinel-executor", user = null, service = "sentinel"))
+    assertThat(page.list("entries").map { it["token"] }).containsExactly(ap, ap2)
+    val cursor = (page["cursor"] as Double).toLong()
+    assertThat(ok(post("/_feeds/approvables/cursors/sentinel-executor/commit?token=$cursor", user = null, service = "sentinel"))["advanced"]).isEqualTo(true)
+    assertThat(ok(get("/_feeds/fetch/approvables?consumer=sentinel-executor", user = null, service = "sentinel")).list("entries")).isEmpty()
+
+    val row = ok(get("/_feeds/status")).list("cursors").single()
+    assertThat(row).containsEntry("consumer", "sentinel-executor").containsEntry("feed", "approvables").containsEntry("token", "$cursor").containsEntry("lag", 0.0).containsEntry("enabled", true)
+    assertThat(row["last_advanced_at"]).isEqualTo("2026-11-10T12:00:00Z")
+
+    // Switching a consumer off is an admin's call, and the consumer is told rather than handed an empty page.
+    assertThat(post("/_feeds/approvables/cursors/sentinel-executor/disable").code).isEqualTo(403)
+    ok(post("/_feeds/approvables/cursors/sentinel-executor/disable", user = "root"))
+    val refused = get("/_feeds/fetch/approvables?consumer=sentinel-executor", user = null, service = "sentinel")
+    assertThat(refused.code).isEqualTo(409)
+    assertThat(refused.text).contains("disabled")
+    assertThat(get("/_admin/feedz/", user = null).text).contains("<title>feedz</title>")
   }
 
   @Test

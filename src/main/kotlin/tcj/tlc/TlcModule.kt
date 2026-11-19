@@ -7,6 +7,9 @@ import misk.jdbc.SchemaMigratorService
 import misk.security.authz.AccessControlModule
 import misk.security.authz.MiskCallerAuthenticator
 import misk.web.WebActionModule
+import tcj.feedz.FeedzAccess
+import tcj.feedz.FeedzConfig
+import tcj.feedz.FeedzModule
 
 /** Everything except deployment + web server wiring, which differ between app and tests. */
 class TlcModule(private val config: TlcConfig) : KAbstractModule() {
@@ -18,6 +21,9 @@ class TlcModule(private val config: TlcConfig) : KAbstractModule() {
     install(JdbcModule(TlcDb::class, config.data_source))
     install(ServiceModule<Background>().dependsOn<SchemaMigratorService>(TlcDb::class))
     bind<NotificationTransport>().to<DefaultTransport>()
+
+    install(FeedzModule(TlcDb::class, FeedzConfig(tick_ms = config.tlc.background_interval_ms), read = FeedzAccess(capabilities = listOf(USER)), admin = FeedzAccess(capabilities = listOf(ADMIN))))
+    install(TlcFeedsModule())
 
     install(WebActionModule.create<WebActions>())
     install(WebActionModule.create<InfoActions>())
@@ -34,6 +40,5 @@ class TlcModule(private val config: TlcConfig) : KAbstractModule() {
     install(WebActionModule.create<ApprovableActions>())
     install(WebActionModule.create<OwnershipActions>())
     install(WebActionModule.create<EdgeActions>())
-    install(WebActionModule.create<FeedActions>())
   }
 }

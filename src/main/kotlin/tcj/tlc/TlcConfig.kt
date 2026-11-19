@@ -14,7 +14,7 @@ data class TlcConfig(
 
 data class TlcSettings(
   val public_url: String = "http://localhost:8790",
-  /** Period of the one background loop: feed publishing + notification delivery. */
+  /** Period of the background loops: feed publishing (misk-feedz) and ratification expiry + notification delivery. */
   val background_interval_ms: Long = 500,
   /** Data shards assigned at write time; feed consumers select by modulus. */
   val feed_shards: Int = 16,

@@ -6,8 +6,12 @@ they last changed.
 ```
 GET /_feeds/fetch/{taggings|threads|comments|approvables|ownerships}?after=<cursor>&limit=100[&shard=i&shard_count=n]
  →  {"feed": "...", "entries": [ …rows, each with feed_sync_id and shard… ], "cursor": <next after>}
-GET /_feeds/status      → per feed: sequence, rows, pending (unpublished), publishing_enabled
+GET /_feeds/status      → per feed: sequence, rows, pending (unpublished), publishing_enabled; per cursor: token, lag, enabled, timestamps
+GET /_admin/feedz/      → the same as a page, with the operator commands
 ```
+
+The machinery is the `misk-feedz` library (`FeedzModule` in `TlcModule.kt`); `TlcFeedsModule` in
+`Feeds.kt` only says which tables are feeds and how a page of each is read.
 
 ## Mechanics
 
@@ -25,6 +29,30 @@ GET /_feeds/status      → per feed: sequence, rows, pending (unpublished), pub
   a feed without coordination while everything about one target stays in order on one consumer.
 - An empty page returns the same cursor you sent.
 - Admin: `POST /_feeds/{feed}/pause|resume` (persisted), `POST /_feeds/publish` (publish now, even if paused).
+
+## Keeping the cursor in TLC
+
+A consumer that would rather not store its own position names itself instead of sending `after`:
+
+```
+GET  /_feeds/fetch/{feed}?consumer=NAME[&shard=i&shard_count=n]     page after NAME's cursor (created on first use)
+POST /_feeds/{feed}/cursors/NAME/commit?token=<page.cursor>[&shard=i]   → {"advanced": true|false}
+```
+
+- Fetching does not move the cursor; **commit** does, and only forward. Fetch again without
+  committing and the same page comes back.
+- One row per (consumer, feed, shard) in `feed_cursors`. `last_advanced_at` moves only when a commit
+  moves the token; `updated_at` moves only when an operator touches the cursor. So "switched off at
+  14:02" and "last made progress at 13:10" are separate facts.
+- A cursor's `shard_count` is fixed once any shard exists; fetching with another is a 409 until an
+  admin reshards it.
+- Admin, per cursor: `POST /_feeds/{feed}/cursors/NAME/disable|enable[?shard=]`,
+  `…/seek?token=N[&shard=]` (rewind or skip; 0 = from the start), `…/reshard?shard_count=N` (every
+  new shard restarts at the lowest old position), `DELETE /_feeds/{feed}/cursors/NAME`.
+- **A disabled cursor answers 409, not an empty page**, and refuses commits, so a switched-off
+  consumer cannot look caught up or undo a rewind with a late commit.
+- `lag` in the status is `sequence − token`: an upper bound on entries left (ids of other shards and
+  of republished rows count too).
 
 ## The intended loop
 
