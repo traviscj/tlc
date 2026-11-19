@@ -33,16 +33,54 @@ startup — right for a single self-hosted instance. Migrations are **one statem
 
 ## Auth — read this before exposing it
 
-Identity is **whatever the `X-TLC-User` / `X-TLC-Service` headers say**. TLC checks their shape, not
-their truth. That is the normal arrangement behind an authenticating proxy / service mesh that
-overwrites those headers, and it is wide open without one: anyone who can reach the port can be
-anyone, including an admin. The bundled pages accept `?user=` for the same reason. Bound to
-localhost on a dev box it's fine; anywhere else, front it and strip client-supplied copies of both
-headers at the proxy.
+Two modes, selected by whether `tlc.oidc` is set.
 
-Capabilities: every identified caller has `tlc_user`; ldaps in `tlc.admins` also have `tlc_admin`.
+**OIDC (`tlc.oidc` set) — for anything beyond localhost.** Identity comes from a bearer JWT issued
+by an OIDC provider (written against Pocket ID). TLC verifies it itself: RS256/384/512 signature
+against the issuer's JWKS, then `iss`, `aud`, `exp`, `nbf`. `X-TLC-User` on its own identifies
+nobody, so nothing depends on a proxy stripping headers.
+
+```yaml
+tlc:
+  oidc:
+    issuer: https://id.example.net   # must equal the token's iss
+    audiences: [tlc]                 # client ids whose tokens are accepted; required
+  oidc_admin_groups: [tlc-admins]    # issuer groups that are admins (in addition to tlc.admins)
+  oidc_services: { "<token sub>": sentinel }   # machine callers, keyed by the token's sub
+```
+
+- The token is read from `Authorization: Bearer`, else `X-Auth-Request-Access-Token`, else
+  `X-Forwarded-Access-Token` (`oidc.token_headers`). The last two are what oauth2-proxy hands a
+  backend, so the browser pages work behind oauth2-proxy + Caddy `forward_auth` once the vhost
+  copies one of them; scripts and services send `Authorization` directly.
+- A human's ldap is the `preferred_username` claim (`oidc.user_claim`), lowercased. An access token
+  that carries only `sub` is resolved once through the issuer's userinfo endpoint and cached for
+  `oidc.cache_seconds` (300).
+- A token whose `sub` is in `oidc_services` is that service. It may name the human it acts for in
+  `X-TLC-User`; a human named that way is never an admin.
+- Revocation is not checked: a token is good until its `exp`.
+- If TLC runs in a container, the issuer hostname must resolve from inside it.
+- Smoke test against the real issuer:
+  `OIDC_LIVE_ISSUER=https://id.example.net ./gradlew test --tests '*OidcAuthTest*' -i` in `misk-oidc`
+  (add `OIDC_LIVE_AUDIENCE` and `OIDC_LIVE_TOKEN` to verify an actual token).
+
+The verifier is the separate `misk-oidc` library (`tcj:misk-oidc`), which also ships
+`OidcAuthModule`, a drop-in for other misk services: caller = username, capabilities = the token's
+groups. `settings.gradle.kts` builds it from a sibling `../misk-oidc` checkout, else from its GitHub
+repository as a Gradle source dependency.
+
+**Trusted headers (`tlc.oidc` unset) — dev and tests.** Identity is whatever `X-TLC-User` /
+`X-TLC-Service` say; TLC checks their shape, not their truth. Anyone who can reach the port can be
+anyone, including an admin, and the bundled pages accept `?user=` for the same reason. Fine bound
+to localhost; do not expose it.
+
+Capabilities: every identified caller has `tlc_user`; admins also have `tlc_admin`.
 `AccessControlModule` is installed (misk's `@Authenticated` is inert without it); the test suite
-asserts the 401/403 paths.
+asserts the 401/403 paths in both modes.
+
+The bundled pages still take the viewer's name from `?user=` for display and for the header they
+send. Under OIDC the header is ignored and the API acts as the token's user, but the pages do not
+yet read `/api/me` to learn who that is.
 
 ## Background work
 
@@ -72,5 +110,5 @@ operations wholly superseded before your horizon.
 
 Runs on the Mac against the native mysqld. For i711: `./gradlew installDist` gives
 `build/install/tlc`; it needs a JDK 21, a MySQL database, `TLC_CONFIG` with real `data_source`,
-`public_url` and `admins`, and a Caddy vhost that authenticates and sets `X-TLC-User` — do not
-publish it ungated.
+`public_url`, `admins` and `oidc` (see Auth above), plus an OIDC client for it at the issuer — do
+not publish it in trusted-header mode.

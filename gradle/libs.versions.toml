@@ -1,7 +1,7 @@
 [versions]
 junit = "5.11.4"
-kotlin = "2.1.10"
-misk = "2025.11.26.155736-9435a31"
+kotlin = "2.3.10"
+misk = "2026.11.09.204108-cf4eca4"
 wire = "5.2.1"
 
 [libraries]
@@ -19,6 +19,7 @@ miskInject = { module = "com.squareup.misk:misk-inject", version.ref = "misk" }
 miskJdbc = { module = "com.squareup.misk:misk-jdbc", version.ref = "misk" }
 miskService = { module = "com.squareup.misk:misk-service", version.ref = "misk" }
 miskTesting = { module = "com.squareup.misk:misk-testing", version.ref = "misk" }
+miskOidc = { module = "tcj:misk-oidc", version = "0.1.0" }
 mysql = { module = "com.mysql:mysql-connector-j", version = "8.4.0" }
 slf4jSimple = { module = "org.slf4j:slf4j-simple", version = "2.0.16" }
 wireMoshiAdapter = { module = "com.squareup.wire:wire-moshi-adapter", version.ref = "wire" }

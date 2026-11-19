@@ -3,3 +3,8 @@ tlc:
   admins: [traviscj]
   auto_register_entity_types: false
   # slack_webhook_url: https://hooks.slack.com/services/...   # unset = notifications are only logged
+  # Verify callers against Pocket ID instead of trusting X-TLC-User (docs/operations.md):
+  # oidc:
+  #   issuer: https://id.example.net
+  #   audiences: [tlc]
+  # oidc_admin_groups: [tlc-admins]

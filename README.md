@@ -52,9 +52,10 @@ scripts/demo.sh                            # all nine narrated demos (≈25 s; r
 
 Start over: stop the server, `mysql -uroot -h127.0.0.1 -e 'drop database tlc_dev; create database tlc_dev'`, start it, re-seed.
 
-`tlc.admins` (default `[traviscj]`) may write approval rules and the group directory. Identity is the
-`X-TLC-User` / `X-TLC-Service` header — **trusted, not verified**; see `docs/operations.md` before
-putting this anywhere a stranger can reach.
+`tlc.admins` (default `[traviscj]`) may write approval rules and the group directory. Out of the box identity is the
+`X-TLC-User` / `X-TLC-Service` header — **trusted, not verified**. Set `tlc.oidc` to verify OIDC
+bearer tokens (Pocket ID) instead; see `docs/operations.md` before putting this anywhere a stranger
+can reach.
 
 ## Thirty seconds of API
 
@@ -152,7 +153,7 @@ scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-rest
 
 ## Not done (on purpose, so far)
 
-- **Real auth and a real group directory.** Headers are trusted; `directory_memberships` is a local stand-in for the company directory (Okta, Google Groups, LDAP).
+- **A real group directory.** `directory_memberships` is a local stand-in for the company directory (Okta, Google Groups, LDAP).
 - **Running checks, waiving them, timing them out.** TLC records what a service reports and compares it with the rule's bound; it computes nothing, a failed check cannot be waived, and one that never reports stays `MISSING`.
 - **Requirement types beyond the seven shipped** (k-of-one-group, weighted, veto, staged, expiring): see the menu in `docs/approvals.md`.
 - **Re-resolving who is asked when a request is revised.** Parties and impacts are frozen at filing; decline and refile.

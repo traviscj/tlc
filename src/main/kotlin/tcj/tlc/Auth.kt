@@ -10,6 +10,7 @@ import misk.exceptions.UnauthorizedException
 import misk.scope.ActionScoped
 import misk.security.authz.MiskCallerAuthenticator
 import misk.web.HttpCall
+import tcj.oidc.OidcVerifier
 
 const val USER = "tlc_user"
 const val ADMIN = "tlc_admin"
@@ -28,26 +29,43 @@ data class Actor(val ldap: String?, val service: String?, val admin: Boolean) {
 }
 
 /**
- * Trusted-header auth: identity is whatever X-TLC-User / X-TLC-Service say. That is only sound
- * behind something that authenticates the caller and overwrites these headers (SSO proxy, service
- * mesh); TLC itself does not verify them. See docs/operations.md.
+ * Two modes, chosen by config:
+ *
+ * - `tlc.oidc` set: identity comes from a bearer JWT verified against the issuer (see
+ *   [OidcVerifier]). X-TLC-User alone means nothing. A human is their username claim; a token whose
+ *   `sub` is listed in `tlc.oidc_services` is that service, and may name the human it acts for in
+ *   X-TLC-User (it never gets admin that way).
+ * - `tlc.oidc` unset: trusted headers. Identity is whatever X-TLC-User / X-TLC-Service say, which
+ *   is only sound on localhost or behind a proxy that overwrites them. See docs/operations.md.
  */
 @Singleton
 class Actors @Inject constructor(
   private val httpCall: @JvmSuppressWildcards ActionScoped<HttpCall>,
   private val config: TlcConfig,
+  clock: Clock,
 ) {
+  private val verifier: OidcVerifier? = config.tlc.oidc?.let { OidcVerifier(it, clock) }
+
   fun currentOrNull(): Actor? {
     val h = httpCall.get().requestHeaders
-    val ldap = h[USER_HEADER]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+    val headerLdap = h[USER_HEADER]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
+    if (headerLdap != null && !LDAP_RE.matches(headerLdap)) return null
+
+    if (verifier != null) {
+      val id = verifier.authenticate { h[it] } ?: return null
+      config.tlc.oidc_services[id.subject]?.let { service -> return Actor(headerLdap, service, admin = false) }
+      val ldap = id.username?.lowercase()?.takeIf(LDAP_RE::matches) ?: return null
+      return Actor(ldap, null, ldap in config.tlc.admins || id.groups.any { it in config.tlc.oidc_admin_groups })
+    }
+
     val service = h[SERVICE_HEADER]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
-    if (ldap == null && service == null) return null
-    if (ldap != null && !LDAP_RE.matches(ldap)) return null
+    if (headerLdap == null && service == null) return null
     if (service != null && !LDAP_RE.matches(service)) return null
-    return Actor(ldap, service, ldap != null && ldap in config.tlc.admins)
+    return Actor(headerLdap, service, headerLdap != null && headerLdap in config.tlc.admins)
   }
 
-  fun current(): Actor = currentOrNull() ?: throw UnauthorizedException("send $USER_HEADER and/or $SERVICE_HEADER")
+  fun current(): Actor = currentOrNull()
+    ?: throw UnauthorizedException(if (verifier != null) "send Authorization: Bearer <token>" else "send $USER_HEADER and/or $SERVICE_HEADER")
 }
 
 class TlcAuthenticator @Inject constructor(private val actors: Actors) : MiskCallerAuthenticator {

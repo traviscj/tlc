@@ -4,6 +4,7 @@ import javax.inject.Qualifier
 import misk.config.Config
 import misk.jdbc.DataSourceConfig
 import misk.web.WebConfig
+import tcj.oidc.OidcAuthConfig
 
 data class TlcConfig(
   val web: WebConfig,
@@ -37,8 +38,14 @@ data class TlcSettings(
   val ownership_lapse_days: Int = 90,
   /** Default time a break-glass (mode=RATIFY) action stands before it must be reverted. */
   val ratify_ttl_seconds: Long = 4 * 3600,
+  /** Set to authenticate callers by OIDC bearer JWT (Pocket ID). null = trusted-header auth: dev and tests only. */
+  val oidc: OidcAuthConfig? = null,
+  /** With `oidc`: members of these issuer groups are admins, in addition to `admins`. */
+  val oidc_admin_groups: List<String> = listOf(),
+  /** With `oidc`: token `sub` -> service name, for machine callers (client-credentials tokens). */
+  val oidc_services: Map<String, String> = mapOf(),
 ) {
-  override fun toString() = "TlcSettings(public_url=$public_url, admins=$admins, slack_webhook=${if (slack_webhook_url != null) "████" else "none"})"
+  override fun toString() = "TlcSettings(public_url=$public_url, admins=$admins, oidc=${oidc?.issuer ?: "off"}, slack_webhook=${if (slack_webhook_url != null) "████" else "none"})"
 }
 
 @Qualifier
