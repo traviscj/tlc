@@ -7,16 +7,15 @@ pluginManagement {
 
 rootProject.name = "tlc"
 
-// tcj:misk-oidc is not on Maven Central. A sibling checkout is built in place; otherwise Gradle
-// clones it and builds the tag that matches the requested version.
-val oidcSibling = file("../misk-oidc")
-if (oidcSibling.isDirectory) {
-  includeBuild(oidcSibling)
-} else {
-  sourceControl {
-    gitRepository(uri("https://github.com/traviscj/misk-oidc.git")) { producesModule("tcj:misk-oidc") }
+// tcj:misk-oidc and tcj:misk-feedz are not on Maven Central. A sibling checkout is built in place;
+// otherwise Gradle clones the library and builds the tag that matches the requested version.
+for (lib in listOf("misk-oidc", "misk-feedz")) {
+  val sibling = file("../$lib")
+  if (sibling.isDirectory) {
+    includeBuild(sibling)
+  } else {
+    sourceControl {
+      gitRepository(uri("https://github.com/traviscj/$lib.git")) { producesModule("tcj:$lib") }
+    }
   }
 }
-
-// tcj:misk-feedz is not on GitHub yet: sibling checkout only.
-file("../misk-feedz").takeIf { it.isDirectory }?.let { includeBuild(it) }
