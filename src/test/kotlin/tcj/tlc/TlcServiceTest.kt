@@ -1135,4 +1135,25 @@ class TlcServiceTest {
     assertThat(post("/api/items/sync", mapOf("source" to "srcage", "items" to listOf(mapOf("key" to "x", "title" to "t"), mapOf("key" to "x", "title" to "t")))).code).isEqualTo(400)
     assertThat(post("/api/items", mapOf("kind" to "todo")).code).isEqualTo(400)
   }
+
+  @Test
+  fun `a delegated item is claimed once, reports back, stays open and ranks up until its result is read`() {
+    val a = post("/api/items", mapOf("title" to "run pintake on the 27 new", "kind" to "todo"))["token"] as String
+    post("/api/items", mapOf("title" to "claude needs an answer", "kind" to "question"))
+    assertThat(post("/api/items/$a/delegate", mapOf("surface" to "deck"))["run_state"]).isEqualTo("QUEUED")
+    assertThat(post("/api/items/$a/delegate").code).isEqualTo(409)                        // one request at a time
+    assertThat(get("/api/items?run=queued&assigned=claude").list("items").map { it["token"] }).containsExactly(a)
+    assertThat(post("/api/items/$a/run", mapOf("state" to "DONE", "result" to "x"), user = null, service = "worker").code).isEqualTo(409)   // not claimed yet
+    assertThat(post("/api/items/$a/run", mapOf("state" to "RUNNING"), user = null, service = "worker")["run_state"]).isEqualTo("RUNNING")
+    assertThat(post("/api/items/$a/run", mapOf("state" to "RUNNING"), user = null, service = "worker2").code).isEqualTo(409)                 // a second worker loses
+    assertThat(titles()).containsExactly("claude needs an answer", "run pintake on the 27 new")
+    val r = post("/api/items/$a/run", mapOf("state" to "NEEDS_YOU", "result" to "filed 25; 2 need a correspondent"), user = null, service = "worker")
+    assertThat(listOf(r["state"], r["run_state"], r["run_result"], r["assigned_to"])).containsExactly("OPEN", "NEEDS_YOU", "filed 25; 2 need a correspondent", "claude")
+    assertThat(titles()).containsExactly("run pintake on the 27 new", "claude needs an answer")   // a result to read outranks it
+    assertThat(get("/api/items/$a").list("events").map { it["kind"] }).containsExactly("RUN", "RUN", "DELEGATED", "CREATED")
+    assertThat(post("/api/items/$a/delegate", mapOf("note" to "try the other two"))["run_result"]).isNull()    // asking again starts over
+    assertThat(post("/api/items/$a/recall")["run_state"]).isNull()
+    assertThat(post("/api/items/$a/recall").code).isEqualTo(409)
+    assertThat(post("/api/items/$a/run", mapOf("state" to "BANANAS"), user = null, service = "worker").code).isEqualTo(400)
+  }
 }

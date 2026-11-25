@@ -1,0 +1,5 @@
+ALTER TABLE items
+  ADD COLUMN assigned_to VARCHAR(64) NULL,
+  ADD COLUMN run_state VARCHAR(16) NULL,
+  ADD COLUMN run_at_ms BIGINT NULL,
+  ADD COLUMN run_result TEXT NULL

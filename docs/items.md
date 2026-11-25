@@ -52,9 +52,23 @@ Snoozed items are left out of `state=open` until their time.
 
 This rule is a placeholder for a learned one. What it will be learned from is already recorded:
 
+## Delegation
+
+```sh
+POST /api/items/I-…/delegate   {"to":"claude","surface":"deck","note":"…"}    -> run_state QUEUED (409 while one is queued or running)
+POST /api/items/I-…/recall                                                    -> un-queues it, if nobody has claimed it yet
+GET  /api/items?run=queued&assigned=claude                                     what a worker polls
+POST /api/items/I-…/run        {"state":"RUNNING"}                            the claim: succeeds for exactly one caller
+POST /api/items/I-…/run        {"state":"DONE|NEEDS_YOU|FAILED","result":"…"}
+```
+
+Delegating records a request; TLC runs nothing. A worker claims the item, does the work and reports back. The item
+stays **open** with `run_state` and `run_result` on it: whoever asked reads the result and closes the item. While a
+result is waiting to be read the item's score is 1.5 higher.
+
 ## Events
 
 Every item has an append-only history (`GET /api/items/I-…`): `CREATED`, `SHOWN` (with the surface and position it
 was shown at), `PICKED` (preferred over `other` when asked to choose between two), `SNOOZED`, `DONE`, `DROPPED`,
-`REOPENED`, `RESOLVED` (closed by its source). Surfaces that display items should report `shown` for what was
+`REOPENED`, `RESOLVED` (closed by its source), `DELEGATED`, `RECALLED`, `RUN` (each state a worker reported). Surfaces that display items should report `shown` for what was
 actually on screen: shown-and-passed-over is the signal that cannot be reconstructed afterwards.

@@ -10,6 +10,7 @@ import kotlin.math.max
 import kotlin.math.min
 import misk.exceptions.BadRequestException
 import misk.exceptions.NotFoundException
+import misk.exceptions.WebActionException
 import misk.security.authz.Authenticated
 import misk.web.Get
 import misk.web.PathParam
@@ -31,6 +32,11 @@ import misk.web.actions.WebAction
  *
  * Every time an item is shown, acted on, or preferred over another is an `item_events` row. That log is what a
  * ranking gets learned from later; [priority] is the fixed rule used until then.
+ *
+ * An item can be **delegated** (`…/delegate`): handed to an agent to do. That only records the request
+ * (`assigned_to`, `run_state = QUEUED`); a worker elsewhere claims it (`…/run` RUNNING, which succeeds once),
+ * does the work and reports DONE, NEEDS_YOU or FAILED with a result. The item stays open either way: the person
+ * who asked reads the result and closes it. An item with a result waiting to be read ranks [RESULT_BOOST] higher.
  */
 enum class ItemState { OPEN, DONE, DROPPED }
 
@@ -42,13 +48,16 @@ data class ItemDto(
   /** What the list is ordered by. See [ItemStore.priority]. */
   val score: Double,
   val derived: Boolean, val created_at: String, val updated_at: String, val closed_at: String?, val closed_by: String?,
+  /** Who it was handed to, where that stands (QUEUED, RUNNING, DONE, NEEDS_YOU, FAILED), since when, and what came back. */
+  val assigned_to: String? = null, val run_state: String? = null, val run_at: String? = null, val run_result: String? = null,
 )
 data class ItemEventDto(val at: String, val kind: String, val actor: String, val surface: String?, val other: String?, val detail: String?)
 data class ItemDetail(val item: ItemDto, val events: List<ItemEventDto>)
 data class ItemReq(val source: String?, val key: String?, val kind: String?, val title: String?, val detail: String?, val url: String?, val due_at: String?, val priority: Double?)
 data class ItemSyncReq(val source: String?, val items: List<ItemReq>?)
 data class ItemSyncResp(val source: String, val opened: Int, val updated: Int, val reopened: Int, val closed: Int, val open: Int)
-data class ItemActionReq(val until: String?, val seconds: Long?, val surface: String?, val note: String?)
+data class ItemActionReq(val until: String?, val seconds: Long?, val surface: String?, val note: String?, val to: String? = null)
+data class ItemRunReq(val state: String?, val result: String?)
 data class ItemShownReq(val tokens: List<String>?, val surface: String?)
 data class ItemPickReq(val winner: String?, val loser: String?, val surface: String?)
 data class ItemList(val items: List<ItemDto>, /** open / snoozed / done / dropped, before `limit`. */ val counts: Map<String, Int>)
@@ -59,6 +68,9 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
   companion object {
     /** Where a kind starts when its source gives no hint. Unknown kinds start at 2. */
     val KIND_WEIGHT = mapOf("question" to 3.0, "broken" to 3.0, "property" to 2.5, "deploy" to 2.0, "commit" to 2.0, "chore" to 2.0, "person" to 2.0, "todo" to 2.0, "idea" to 1.0)
+    val RUN_STATES = setOf("RUNNING", "DONE", "NEEDS_YOU", "FAILED")
+    /** Added to the score while a delegated run's result is waiting to be read. */
+    const val RESULT_BOOST = 1.5
     private val KIND_RE = Regex("[a-z][a-z0-9_-]{0,31}")
     private val SOURCE_RE = Regex("[a-z0-9][a-z0-9._-]{0,63}")
 
@@ -79,8 +91,10 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
   private fun dto(rs: ResultSet, now: Long) = ItemDto(
     rs.getString("token"), rs.getString("source"), rs.getString("source_key"), rs.getString("kind"), rs.getString("title"), rs.getString("detail"), rs.getString("url"),
     rs.getString("state"), rs.isoOrNull("snoozed_until_ms"), rs.isoOrNull("due_at_ms"), rs.getDouble("priority").takeUnless { rs.wasNull() },
-    priority(rs.getString("kind"), rs.getDouble("priority").takeUnless { rs.wasNull() }, rs.getLong("created_at_ms"), rs.longOrNull("due_at_ms"), now),
+    priority(rs.getString("kind"), rs.getDouble("priority").takeUnless { rs.wasNull() }, rs.getLong("created_at_ms"), rs.longOrNull("due_at_ms"), now) +
+      (if (rs.getString("run_state") in setOf("DONE", "NEEDS_YOU", "FAILED")) RESULT_BOOST else 0.0),
     rs.getBoolean("derived"), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("closed_at_ms"), rs.getString("closed_by"),
+    rs.getString("assigned_to"), rs.getString("run_state"), rs.isoOrNull("run_at_ms"), rs.getString("run_result"),
   )
 
   private fun event(c: Connection, itemId: Long, kind: String, actor: Actor, surface: String? = null, other: Long? = null, detail: String? = null) {
@@ -169,7 +183,7 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     ItemSyncResp(source, results.count { it == "opened" }, results.count { it == "updated" }, results.count { it == "reopened" }, closed, open)
   }
 
-  fun list(state: String?, source: String?, kind: String?, limit: Int): ItemList = db.tx { c ->
+  fun list(state: String?, source: String?, kind: String?, limit: Int, run: String? = null, assigned: String? = null): ItemList = db.tx { c ->
     val now = clock.millis()
     val counts = linkedMapOf("open" to 0, "snoozed" to 0, "done" to 0, "dropped" to 0)
     c.select("SELECT state, (snoozed_until_ms IS NOT NULL AND snoozed_until_ms > ?) AS z, COUNT(*) FROM items GROUP BY state, z", listOf(now)) {
@@ -188,6 +202,8 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     }
     if (!source.isNullOrBlank()) { where += "source = ?"; args += source }
     if (!kind.isNullOrBlank()) { where += "kind = ?"; args += kind }
+    if (!run.isNullOrBlank()) { where += "run_state = ?"; args += run.uppercase() }
+    if (!assigned.isNullOrBlank()) { where += "assigned_to = ?"; args += assigned }
     // The score depends on the clock, so it is computed here and sorted in memory; open loops are counted in hundreds.
     val rows = c.select("SELECT * FROM items ${if (where.isEmpty()) "" else "WHERE " + where.joinToString(" AND ")} ORDER BY id LIMIT 5000", args) { dto(it, now) }
     ItemList(rows.sortedWith(compareByDescending<ItemDto> { it.score }.thenBy { it.created_at }).take(limit), counts)
@@ -221,8 +237,35 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
         c.exec("UPDATE items SET state = 'OPEN', closed_at_ms = NULL, closed_by = NULL, snoozed_until_ms = NULL, updated_at_ms = ? WHERE id = ?", listOf(now, id))
         event(c, id, "REOPENED", actor, req.surface, detail = req.note)
       }
-      else -> throw BadRequestException("verb is done|drop|snooze|reopen")
+      "delegate" -> {
+        val to = (req.to ?: "claude").trim().lowercase()
+        if (!SOURCE_RE.matches(to)) throw BadRequestException("to '$to' must look like a-z0-9._-")
+        // Asking again while a run is in flight would start a second one; after a result it is a fresh request.
+        val n = c.exec("UPDATE items SET assigned_to = ?, run_state = 'QUEUED', run_at_ms = ?, run_result = NULL, updated_at_ms = ? WHERE id = ? AND state = 'OPEN' AND (run_state IS NULL OR run_state NOT IN ('QUEUED','RUNNING'))",
+          listOf(to, now, now, id))
+        if (n == 0) throw WebActionException(409, "already queued or running, or not open", "already queued or running, or not open")
+        event(c, id, "DELEGATED", actor, req.surface, detail = listOfNotNull(to, req.note).joinToString(": "))
+      }
+      "recall" -> {
+        val n = c.exec("UPDATE items SET run_state = NULL, assigned_to = NULL, run_at_ms = NULL, updated_at_ms = ? WHERE id = ? AND run_state = 'QUEUED'", listOf(now, id))
+        if (n == 0) throw WebActionException(409, "nothing queued to recall", "nothing queued to recall")
+        event(c, id, "RECALLED", actor, req.surface)
+      }
+      else -> throw BadRequestException("verb is done|drop|snooze|reopen|delegate|recall")
     }
+    c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, now) }.first()
+  }
+
+  /** The worker's side of a delegation. RUNNING is a claim: it succeeds for exactly one caller. */
+  fun run(actor: Actor, token: String, req: ItemRunReq): ItemDto = db.tx { c ->
+    val id = idOf(c, token)
+    val now = clock.millis()
+    val state = req.state.required("state").uppercase()
+    if (state !in RUN_STATES) throw BadRequestException("state is ${RUN_STATES.joinToString("|")}")
+    val n = if (state == "RUNNING") c.exec("UPDATE items SET run_state = 'RUNNING', run_at_ms = ?, updated_at_ms = ? WHERE id = ? AND run_state = 'QUEUED'", listOf(now, now, id))
+    else c.exec("UPDATE items SET run_state = ?, run_at_ms = ?, run_result = ?, updated_at_ms = ? WHERE id = ? AND run_state = 'RUNNING'", listOf(state, now, req.result?.take(16000), now, id))
+    if (n == 0) throw WebActionException(409, "item is not ${if (state == "RUNNING") "QUEUED" else "RUNNING"}", "item is not ${if (state == "RUNNING") "QUEUED" else "RUNNING"}")
+    event(c, id, "RUN", actor, detail = state)
     c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, now) }.first()
   }
 
@@ -258,7 +301,11 @@ class ItemActions @Inject constructor(private val store: ItemStore, private val 
   fun pick(@RequestBody req: ItemPickReq) = store.pick(actors.current(), req)
 
   @Get("/api/items") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
-  fun list(@QueryParam state: String?, @QueryParam source: String?, @QueryParam kind: String?, @QueryParam limit: Int?) = store.list(state, source, kind, limitOf(limit))
+  fun list(@QueryParam state: String?, @QueryParam source: String?, @QueryParam kind: String?, @QueryParam limit: Int?, @QueryParam run: String?, @QueryParam assigned: String?) =
+    store.list(state, source, kind, limitOf(limit), run, assigned)
+
+  @Post("/api/items/{token}/run") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
+  fun run(@PathParam token: String, @RequestBody req: ItemRunReq) = store.run(actors.current(), token, req)
 
   @Get("/api/items/{token}") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
   fun get(@PathParam token: String) = store.get(token)
