@@ -1156,4 +1156,34 @@ class TlcServiceTest {
     assertThat(post("/api/items/$a/recall").code).isEqualTo(409)
     assertThat(post("/api/items/$a/run", mapOf("state" to "BANANAS"), user = null, service = "worker").code).isEqualTo(400)
   }
+
+  @Test
+  fun `items are a feed of latest states, and a sync that changes nothing publishes nothing`() {
+    fun sync(title: String) = post("/api/items/sync", mapOf("items" to listOf(mapOf("key" to "inforad-net", "title" to title, "kind" to "deploy"))), user = null, service = "srcage")
+    fun page(after: Any? = 0) = ok(get("/_feeds/fetch/items?after=$after"))
+    val a = post("/api/items", mapOf("title" to "call the roofer"))["token"] as String
+    sync("inforad-net is 3 behind")
+    assertThat(page().list("entries")).isEmpty()                                           // not published yet
+    publisher.publishAll()
+    val p1 = page()
+    assertThat(p1.list("entries").map { it["title"] }).containsExactly("call the roofer", "inforad-net is 3 behind")
+    assertThat(p1.list("entries").all { it["feed_sync_id"] != null && it["shard"] != null }).isTrue()
+    sync("inforad-net is 3 behind")                                                        // the same set again
+    publisher.publishAll()
+    val c1 = (p1["cursor"] as Double).toLong()
+    assertThat(page(c1).list("entries")).isEmpty()
+    post("/api/items/$a/snooze", mapOf("seconds" to 3600))
+    post("/api/items/$a/delegate")
+    sync("inforad-net is 4 behind")
+    publisher.publishAll()
+    val p2 = page(c1).list("entries")                                            // each changed item once, in its latest state
+    assertThat(p2.map { it["title"] }).containsExactlyInAnyOrder("call the roofer", "inforad-net is 4 behind")
+    assertThat(p2.first { it["token"] == a }["run_state"]).isEqualTo("QUEUED")
+    assertThat(p2.first { it["token"] == a }["snoozed_until"]).isNotNull()
+    post("/api/items/sync", mapOf("items" to listOf<Any>()), user = null, service = "srcage")   // resolved by its source
+    publisher.publishAll()
+    val p3 = ok(get("/_feeds/fetch/items?consumer=panel")).list("entries")                  // a named consumer starts from the beginning
+    assertThat(p3.first { it["key"] == "inforad-net" }["closed_by"]).isEqualTo("source")
+    assertThat(p3).hasSize(2)
+  }
 }

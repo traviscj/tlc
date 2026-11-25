@@ -37,6 +37,10 @@ import misk.web.actions.WebAction
  * (`assigned_to`, `run_state = QUEUED`); a worker elsewhere claims it (`…/run` RUNNING, which succeeds once),
  * does the work and reports DONE, NEEDS_YOU or FAILED with a result. The item stays open either way: the person
  * who asked reads the result and closes it. An item with a result waiting to be read ranks [RESULT_BOOST] higher.
+ *
+ * `items` is a feed (see Feeds.kt): every change a reader can see NULLs `feed_sync_id` and the item is published
+ * again in its new state. A sync that changes nothing publishes nothing, and neither does time passing (a snooze
+ * running out, a deadline nearing): the feed carries `snoozed_until` and `due_at` for consumers to apply themselves.
  */
 enum class ItemState { OPEN, DONE, DROPPED }
 
@@ -50,6 +54,8 @@ data class ItemDto(
   val derived: Boolean, val created_at: String, val updated_at: String, val closed_at: String?, val closed_by: String?,
   /** Who it was handed to, where that stands (QUEUED, RUNNING, DONE, NEEDS_YOU, FAILED), since when, and what came back. */
   val assigned_to: String? = null, val run_state: String? = null, val run_at: String? = null, val run_result: String? = null,
+  /** Position in the `items` feed; null between a change and its publication (about half a second). */
+  val feed_sync_id: Long? = null, val shard: Int = 0,
 )
 data class ItemEventDto(val at: String, val kind: String, val actor: String, val surface: String?, val other: String?, val detail: String?)
 data class ItemDetail(val item: ItemDto, val events: List<ItemEventDto>)
@@ -64,7 +70,7 @@ data class ItemList(val items: List<ItemDto>, /** open / snoozed / done / droppe
 data class Ack(val ok: Boolean = true, val n: Int = 1)
 
 @Singleton
-class ItemStore @Inject constructor(private val db: Db, private val clock: Clock) {
+class ItemStore @Inject constructor(private val db: Db, private val clock: Clock, private val config: TlcConfig) {
   companion object {
     /** Where a kind starts when its source gives no hint. Unknown kinds start at 2. */
     val KIND_WEIGHT = mapOf("question" to 3.0, "broken" to 3.0, "property" to 2.5, "deploy" to 2.0, "commit" to 2.0, "chore" to 2.0, "person" to 2.0, "todo" to 2.0, "idea" to 1.0)
@@ -95,6 +101,7 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
       (if (rs.getString("run_state") in setOf("DONE", "NEEDS_YOU", "FAILED")) RESULT_BOOST else 0.0),
     rs.getBoolean("derived"), iso(rs.getLong("created_at_ms")), iso(rs.getLong("updated_at_ms")), rs.isoOrNull("closed_at_ms"), rs.getString("closed_by"),
     rs.getString("assigned_to"), rs.getString("run_state"), rs.isoOrNull("run_at_ms"), rs.getString("run_result"),
+    rs.longOrNull("feed_sync_id"), rs.getInt("shard"),
   )
 
   private fun event(c: Connection, itemId: Long, kind: String, actor: Actor, surface: String? = null, other: Long? = null, detail: String? = null) {
@@ -136,9 +143,10 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     val now = clock.millis()
     val row = find(c, x.source, x.key)
     if (row == null) {
+      val token = newToken("I")
       val id = c.insert(
-        "INSERT INTO items (created_at_ms, updated_at_ms, token, source, source_key, kind, title, detail, url, state, due_at_ms, priority, derived, last_seen_ms) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
-        listOf(now, now, newToken("I"), x.source, x.key, x.kind, x.title, x.detail, x.url, ItemState.OPEN.name, x.due, x.priority, derived, now))
+        "INSERT INTO items (created_at_ms, updated_at_ms, token, source, source_key, kind, title, detail, url, state, due_at_ms, priority, derived, last_seen_ms, shard) VALUES (?,?,?,?,?,?,?,?,?,?,?,?,?,?,?)",
+        listOf(now, now, token, x.source, x.key, x.kind, x.title, x.detail, x.url, ItemState.OPEN.name, x.due, x.priority, derived, now, shardOf(token, config.tlc.feed_shards)))
       event(c, id, "CREATED", actor)
       return "opened"
     }
@@ -146,9 +154,9 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     // Closed by its source, or closed by a person and then seen to clear: the condition is back, so it is a new occurrence.
     val reopen = row.state != ItemState.OPEN.name && (row.closedBy == "source" || row.cleared || !derived)
     c.exec(
-      "UPDATE items SET updated_at_ms = IF(?, ?, updated_at_ms), kind = ?, title = ?, detail = ?, url = ?, due_at_ms = ?, priority = ?, derived = ?, last_seen_ms = ?, cleared = 0" +
+      "UPDATE items SET updated_at_ms = IF(?, ?, updated_at_ms), feed_sync_id = IF(?, NULL, feed_sync_id), kind = ?, title = ?, detail = ?, url = ?, due_at_ms = ?, priority = ?, derived = ?, last_seen_ms = ?, cleared = 0" +
         (if (reopen) ", state = 'OPEN', closed_at_ms = NULL, closed_by = NULL, snoozed_until_ms = NULL, created_at_ms = ?" else "") + " WHERE id = ?",
-      listOf(changed || reopen, now, x.kind, x.title, x.detail, x.url, x.due, x.priority, derived, now) + (if (reopen) listOf(now) else listOf()) + listOf(row.id))
+      listOf(changed || reopen, now, changed || reopen, x.kind, x.title, x.detail, x.url, x.due, x.priority, derived, now) + (if (reopen) listOf(now) else listOf()) + listOf(row.id))
     if (reopen) event(c, row.id, "REOPENED", actor)
     return when { reopen -> "reopened"; row.state != ItemState.OPEN.name -> "kept"; changed -> "updated"; else -> "same" }
   }
@@ -172,7 +180,7 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     for ((id, key, state) in c.select("SELECT id, source_key, state FROM items WHERE source = ? AND derived = 1 AND (state = 'OPEN' OR cleared = 0) FOR UPDATE", listOf(source)) { Triple(it.getLong(1), it.getString(2), it.getString(3)) }) {
       if (key in keys) continue
       if (state == ItemState.OPEN.name) {
-        c.exec("UPDATE items SET state = 'DONE', closed_at_ms = ?, closed_by = 'source', updated_at_ms = ?, cleared = 1 WHERE id = ?", listOf(now, now, id))
+        c.exec("UPDATE items SET state = 'DONE', closed_at_ms = ?, closed_by = 'source', updated_at_ms = ?, feed_sync_id = NULL, cleared = 1 WHERE id = ?", listOf(now, now, id))
         event(c, id, "RESOLVED", actor)
         closed++
       } else {
@@ -223,31 +231,31 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     val now = clock.millis()
     when (verb) {
       "done", "drop" -> {
-        c.exec("UPDATE items SET state = ?, closed_at_ms = ?, closed_by = ?, updated_at_ms = ?, snoozed_until_ms = NULL, cleared = 0 WHERE id = ?",
+        c.exec("UPDATE items SET state = ?, closed_at_ms = ?, closed_by = ?, updated_at_ms = ?, feed_sync_id = NULL, snoozed_until_ms = NULL, cleared = 0 WHERE id = ?",
           listOf(if (verb == "done") "DONE" else "DROPPED", now, actor.name.take(96), now, id))
         event(c, id, if (verb == "done") "DONE" else "DROPPED", actor, req.surface, detail = req.note)
       }
       "snooze" -> {
         val until = req.until?.let(::parseTime) ?: req.seconds?.let { now + it * 1000 } ?: throw BadRequestException("snooze needs until or seconds")
         if (until <= now) throw BadRequestException("snooze until a time in the future")
-        c.exec("UPDATE items SET snoozed_until_ms = ?, updated_at_ms = ? WHERE id = ?", listOf(until, now, id))
+        c.exec("UPDATE items SET snoozed_until_ms = ?, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ?", listOf(until, now, id))
         event(c, id, "SNOOZED", actor, req.surface, detail = iso(until))
       }
       "reopen" -> {
-        c.exec("UPDATE items SET state = 'OPEN', closed_at_ms = NULL, closed_by = NULL, snoozed_until_ms = NULL, updated_at_ms = ? WHERE id = ?", listOf(now, id))
+        c.exec("UPDATE items SET state = 'OPEN', closed_at_ms = NULL, closed_by = NULL, snoozed_until_ms = NULL, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ?", listOf(now, id))
         event(c, id, "REOPENED", actor, req.surface, detail = req.note)
       }
       "delegate" -> {
         val to = (req.to ?: "claude").trim().lowercase()
         if (!SOURCE_RE.matches(to)) throw BadRequestException("to '$to' must look like a-z0-9._-")
         // Asking again while a run is in flight would start a second one; after a result it is a fresh request.
-        val n = c.exec("UPDATE items SET assigned_to = ?, run_state = 'QUEUED', run_at_ms = ?, run_result = NULL, updated_at_ms = ? WHERE id = ? AND state = 'OPEN' AND (run_state IS NULL OR run_state NOT IN ('QUEUED','RUNNING'))",
+        val n = c.exec("UPDATE items SET assigned_to = ?, run_state = 'QUEUED', run_at_ms = ?, run_result = NULL, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND state = 'OPEN' AND (run_state IS NULL OR run_state NOT IN ('QUEUED','RUNNING'))",
           listOf(to, now, now, id))
         if (n == 0) throw WebActionException(409, "already queued or running, or not open", "already queued or running, or not open")
         event(c, id, "DELEGATED", actor, req.surface, detail = listOfNotNull(to, req.note).joinToString(": "))
       }
       "recall" -> {
-        val n = c.exec("UPDATE items SET run_state = NULL, assigned_to = NULL, run_at_ms = NULL, updated_at_ms = ? WHERE id = ? AND run_state = 'QUEUED'", listOf(now, id))
+        val n = c.exec("UPDATE items SET run_state = NULL, assigned_to = NULL, run_at_ms = NULL, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND run_state = 'QUEUED'", listOf(now, id))
         if (n == 0) throw WebActionException(409, "nothing queued to recall", "nothing queued to recall")
         event(c, id, "RECALLED", actor, req.surface)
       }
@@ -256,14 +264,19 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, now) }.first()
   }
 
+  /** The `items` feed: each item's latest state, in the order items last changed. `score` is as of the read. */
+  fun feed(after: Long, limit: Int, shardSql: String): List<ItemDto> = db.tx { c ->
+    c.select("SELECT g.* FROM items g WHERE g.feed_sync_id > ? $shardSql ORDER BY g.feed_sync_id LIMIT $limit", listOf(after)) { dto(it, clock.millis()) }
+  }
+
   /** The worker's side of a delegation. RUNNING is a claim: it succeeds for exactly one caller. */
   fun run(actor: Actor, token: String, req: ItemRunReq): ItemDto = db.tx { c ->
     val id = idOf(c, token)
     val now = clock.millis()
     val state = req.state.required("state").uppercase()
     if (state !in RUN_STATES) throw BadRequestException("state is ${RUN_STATES.joinToString("|")}")
-    val n = if (state == "RUNNING") c.exec("UPDATE items SET run_state = 'RUNNING', run_at_ms = ?, updated_at_ms = ? WHERE id = ? AND run_state = 'QUEUED'", listOf(now, now, id))
-    else c.exec("UPDATE items SET run_state = ?, run_at_ms = ?, run_result = ?, updated_at_ms = ? WHERE id = ? AND run_state = 'RUNNING'", listOf(state, now, req.result?.take(16000), now, id))
+    val n = if (state == "RUNNING") c.exec("UPDATE items SET run_state = 'RUNNING', run_at_ms = ?, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND run_state = 'QUEUED'", listOf(now, now, id))
+    else c.exec("UPDATE items SET run_state = ?, run_at_ms = ?, run_result = ?, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND run_state = 'RUNNING'", listOf(state, now, req.result?.take(16000), now, id))
     if (n == 0) throw WebActionException(409, "item is not ${if (state == "RUNNING") "QUEUED" else "RUNNING"}", "item is not ${if (state == "RUNNING") "QUEUED" else "RUNNING"}")
     event(c, id, "RUN", actor, detail = state)
     c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, now) }.first()

@@ -51,7 +51,7 @@ scripts/seed.sh                            # the sentinel/proposed_changes/1234 
 open http://localhost:8790/                # console        (type an ldap into "as")
 open http://localhost:8790/demo            # a fake source-service page embedding the iframe
 scripts/demo.sh                            # all nine narrated demos (≈25 s; re-runnable, each run uses fresh ids)
-./gradlew test                             # 42 tests: 31 over real HTTP + MySQL, 6 on auth, 5 on the approval engine
+./gradlew test                             # 43 tests: 32 over real HTTP + MySQL, 6 on auth, 5 on the approval engine
 ```
 
 Start over: stop the server, `mysql -uroot -h127.0.0.1 -e 'drop database tlc_dev; create database tlc_dev'`, start it, re-seed.
@@ -131,9 +131,9 @@ The note is [`docs/2020_scribble.md`](docs/2020_scribble.md), kept as written.
 | iframe · thread\|comment × create/read/update/destroy × mk/ls/edit/rm · like | `/iframe`, `/api/threads`, `/api/comments`, `scripts/tlc` | [embedding](docs/embedding.md) |
 | approvable, approvals, approval rule, rules→groups | `Approvals.kt`, `v010`–`v015` | [approvals](docs/approvals.md) |
 | "alternatives to approval": Slack / email notification | `SLACK_NOTIFICATION` / `EMAIL_NOTIFICATION` requirements + outbox | [approvals](docs/approvals.md#notifications) |
-| "+ feed", "fsi, shard" | `Feeds.kt` on the `misk-feedz` library, `/_feeds/fetch/{taggings,threads,comments,approvables,ownerships}`, `/_admin/feedz/` | [feeds](docs/feeds.md) |
+| "+ feed", "fsi, shard" | `Feeds.kt` on the `misk-feedz` library, `/_feeds/fetch/{taggings,threads,comments,approvables,ownerships,items}`, `/_admin/feedz/` | [feeds](docs/feeds.md) |
 | *(not in the note)* revisions of what is approved, comments per revision, automated checks, agents as approvers, a configurable requirement menu | `Approvals.kt`, `Comments.kt`, `v028`–`v040` | [approvals](docs/approvals.md) · [comments](docs/comments.md#on-a-request-and-at-a-revision) |
-| *(not in the note)* items: open loops from captured and derived sources, a fixed ordering rule, the shown / picked / snoozed / done event log, delegation to an agent | `Items.kt`, `/api/items`, `v042`–`v044` | [items](docs/items.md) |
+| *(not in the note)* items: open loops from captured and derived sources, a fixed ordering rule, the shown / picked / snoozed / done event log, delegation to an agent | `Items.kt`, `/api/items`, `/_feeds/fetch/items`, `v042`–`v046` | [items](docs/items.md) |
 | *(not in the note)* static API tokens, proxy-attested sign-in, container deploy | `Auth.kt`, `deploy/` | [operations](docs/operations.md) |
 | *(not in the note)* ownership per aspect, coverage, dependency edges, aspect-resolved rules, break-glass | `Ownership.kt`, `Approvals.kt`, `v017`–`v023` | [ownership](docs/ownership.md) |
 
@@ -165,7 +165,7 @@ src/main/kotlin/tcj/tlc/   TlcApp TlcModule TlcConfig · Db (tx + SQL helpers) �
                            Ownership (claims, cells, coverage, edges, party resolution)
                            Items (open loops: capture, whole-set sync, ordering, events, delegation)
                            Feeds (publisher, transport, background loop) · Web (pages, /api/info, /api/summary)
-src/main/resources/        migrations/v001…v044 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
+src/main/resources/        migrations/v001…v046 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
 src/test/kotlin/tcj/tlc/   TlcServiceTest (HTTP + MySQL) · TlcOidcTest (the verified ways in) · ApprovalEngineTest
 scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-restart.sh · ui_smoke.py · ui_shots.py
                            loops-checkpoint.py (a Claude Code hook: session work -> logs, and an open-loops reminder)
@@ -184,6 +184,6 @@ deploy/                    Dockerfile · docker-compose.yml · tlc.yaml.example 
 - **The dependency graph is hand-fed.** Nothing syncs edges from a real rule engine; `POST /api/edges` is the integration point. Edges are current-state only.
 - **Safe direction is not modelled.** Break-glass assumes the action is reversible and leaves "is off safer than on" to the rule author (see `docs/ownership.md`).
 - **Scale shortcuts**, each marked in code: tag state is folded from the op log per query; ownership coverage folds a whole type in memory (capped at 20k records); "my queue" scans up to 1000 pending approvables; lists are `limit`-capped without cursors (feeds and logs have cursors).
-- **Items are not a feed.** Consumers poll `GET /api/items`; there is no `/_feeds/fetch/items`, and no page for items in the bundled console.
+- **No page for items in the bundled console.** They are an API, a CLI noun and a feed (`/_feeds/fetch/items`).
 - **Item order is a fixed rule.** The event log a learned ranking needs is recorded; nothing reads it yet.
 - **Delegated work is run elsewhere.** TLC queues the request and stores the result; the worker that runs an agent is not part of this repo.

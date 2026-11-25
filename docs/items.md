@@ -66,6 +66,12 @@ Delegating records a request; TLC runs nothing. A worker claims the item, does t
 stays **open** with `run_state` and `run_result` on it: whoever asked reads the result and closes the item. While a
 result is waiting to be read the item's score is 1.5 higher.
 
+## Feed
+
+`GET /_feeds/fetch/items` (see [feeds](feeds.md)) is every item in the order it last changed, latest state only, with
+server-side cursors for consumers that name themselves. Use it to mirror the queue or react to changes without
+polling the list; use the events below for the history of one item.
+
 ## Events
 
 Every item has an append-only history (`GET /api/items/I-…`): `CREATED`, `SHOWN` (with the surface and position it

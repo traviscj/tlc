@@ -37,6 +37,9 @@ class TlcFeedsModule : KAbstractModule() {
   @ProvidesIntoSet fun approvables(approvals: ApprovalStore): FeedSource =
     feedSource<ApprovableDto>("approvables", "approvables", syncId = { it.feed_sync_id }) { approvals.feed(it.after, it.limit, it.shardSql("g")) }
 
+  @ProvidesIntoSet fun items(items: ItemStore): FeedSource =
+    feedSource<ItemDto>("items", "items", syncId = { it.feed_sync_id }) { items.feed(it.after, it.limit, it.shardSql("g")) }
+
   @ProvidesIntoSet fun ownerships(ownership: OwnershipStore): FeedSource =
     feedSource<OwnershipOpDto>("ownerships", "ownerships", syncId = { it.feed_sync_id }) { ownership.feed(it.after, it.limit, it.shardSql("g")) }
 }
