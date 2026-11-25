@@ -6,7 +6,7 @@
 Every noun takes both verb spellings:  create|read|update|destroy  ==  mk|ls/show|edit|rm
 Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE, TLC_TOKEN (a bearer token: a static
 `tlc_…` API token or an OIDC JWT; else the first line of ~/.config/tlc/token). TLC_URL likewise falls back to
-~/.config/tlc/url.
+~/.config/tlc/url, and TLC_USER to ~/.config/tlc/user before $USER.
 
   tlc item add TITLE [--kind todo|idea|question|broken|deploy|commit|chore|person|property] [--due ISO] [--note DETAIL] [--key K] [--source S] [--link URL] [--value HINT]
   tlc item ls [--state open|snoozed|done|dropped|all] [--source S] [--kind K] | show I-… | done I-… | drop I-… [--note WHY] | reopen I-…
@@ -506,7 +506,7 @@ def main():
     global A
     p = argparse.ArgumentParser(prog="tlc", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     p.add_argument("--url", default=os.environ.get("TLC_URL") or _conf("url") or "http://localhost:8790")
-    p.add_argument("--as", dest="user", default=os.environ.get("TLC_USER", os.environ.get("USER", "")))
+    p.add_argument("--as", dest="user", default=os.environ.get("TLC_USER") or _conf("user") or os.environ.get("USER", ""))
     p.add_argument("--service", default=os.environ.get("TLC_SERVICE"))
     p.add_argument("--json", action="store_true")
     p.add_argument("noun")
