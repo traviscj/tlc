@@ -1,4 +1,4 @@
-# TLC — tags, logs, comments (& approvals & ownership & entities)
+# TLC — tags, logs, comments (& approvals & ownership & entities & items)
 
 > Names like `sentinel`, `ATO_VELOCITY`, `trust-infra` and `alice` are a made-up example company: [who and what they are](docs/example-world.md).
 
@@ -9,6 +9,10 @@ specific revision of the row. The source service keeps its own tables; TLC only 
 triple `service/entity/id` and, for approvals, which version (`…/1234@3`).
 
 What a rule requires is the deploying team's policy, not TLC's. The rules in these docs are examples.
+
+It also keeps one list of its own: **items**, the open loops waiting on a person (a todo, a question, a service
+that is behind, a chore due tonight), with the history of what the person did when shown each one, and a way to
+hand one to an agent and get the result back. See [items](docs/items.md).
 
 ![the per-record widget: ownership, approvals at a revision with checks, tags, comments, logs](docs/img/iframe.png)
 
@@ -47,15 +51,22 @@ scripts/seed.sh                            # the sentinel/proposed_changes/1234 
 open http://localhost:8790/                # console        (type an ldap into "as")
 open http://localhost:8790/demo            # a fake source-service page embedding the iframe
 scripts/demo.sh                            # all nine narrated demos (≈25 s; re-runnable, each run uses fresh ids)
-./gradlew test                             # 25 tests: 21 over real HTTP + MySQL, 4 on the approval engine
+./gradlew test                             # 42 tests: 31 over real HTTP + MySQL, 6 on auth, 5 on the approval engine
 ```
 
 Start over: stop the server, `mysql -uroot -h127.0.0.1 -e 'drop database tlc_dev; create database tlc_dev'`, start it, re-seed.
 
 `tlc.admins` (default `[traviscj]`) may write approval rules and the group directory. Out of the box identity is the
-`X-TLC-User` / `X-TLC-Service` header — **trusted, not verified**. Set `tlc.oidc` to verify OIDC
-bearer tokens (Pocket ID) instead; see `docs/operations.md` before putting this anywhere a stranger
-can reach.
+`X-TLC-User` / `X-TLC-Service` header — **trusted, not verified**. Anywhere a stranger can reach it, turn on one
+or more of the verified ways in (`docs/operations.md`):
+
+| caller | config | how |
+|---|---|---|
+| people in a browser | `tlc.proxy_auth` | an authenticating reverse proxy (oauth2-proxy) names the signed-in user and proves itself with a shared secret |
+| scripts, hooks, cron | `tlc.api_tokens` | a static `Authorization: Bearer tlc_…` token per service, stored as a SHA-256 (`scripts/tlc mint-token <service>`) |
+| services with an IdP client | `tlc.oidc` (+ `oidc_services`) | an OIDC bearer JWT (written against Pocket ID), verified against the issuer's JWKS |
+
+`deploy/` has a Dockerfile, a compose file, an example config and an example Caddy vhost for that setup.
 
 ## Thirty seconds of API
 
@@ -68,6 +79,8 @@ curl $H $U/api/logs          -d "{\"target\":\"$E\",\"level\":\"WARN\",\"message
 curl $H $U/api/threads       -d "{\"target\":\"$E\",\"title\":\"is 20 right?\"}"
 curl $H $U/api/approvables   -d "{\"target\":\"$E\",\"revision\":\"3\",\"rule\":\"AR-6392\",\"context\":\"12 -> 20\"}"  # approve 1234@3
 curl $H "$U/api/summary?target=$E"                                             # everything about it
+curl $H $U/api/items         -d '{"title":"call the roofer","kind":"property","due_at":"2026-12-01T15:00:00Z"}'   # an open loop
+curl $H "$U/api/items"                                                          # what is waiting, most pressing first
 ```
 
 Same thing through the CLI (`scripts/tlc --help`); both verb sets from the note work on every noun:
@@ -79,6 +92,9 @@ tlc tag is $E urgent && echo tagged           # exit status is the answer
 tlc ap approve AP-… --rev 3 ; tlc ap execute AP-… --rev 3   # execute exits 3 if someone else already claimed it
 tlc ap revise AP-… --rev 4 --context "12 -> 16"   # the change was edited: approvals of @3 are dismissed (or kept, per rule)
 tlc --service sentinel ap check AP-… flag_rate_delta_pct --value -6.2   # a machine's assertion; the rule holds the bound
+tlc item add "reply to the inspector" --kind todo ; tlc item ls ; tlc item snooze I-… --ttl 86400 ; tlc item done I-…
+tlc item sync srcage < behind.json            # a derived source's whole current set: what it omits closes itself
+tlc item delegate I-…                         # hand it to an agent; a worker claims it and reports back onto the item
 ```
 
 ## Ownership (added after the note)
@@ -117,6 +133,8 @@ The note is [`docs/2020_scribble.md`](docs/2020_scribble.md), kept as written.
 | "alternatives to approval": Slack / email notification | `SLACK_NOTIFICATION` / `EMAIL_NOTIFICATION` requirements + outbox | [approvals](docs/approvals.md#notifications) |
 | "+ feed", "fsi, shard" | `Feeds.kt` on the `misk-feedz` library, `/_feeds/fetch/{taggings,threads,comments,approvables,ownerships}`, `/_admin/feedz/` | [feeds](docs/feeds.md) |
 | *(not in the note)* revisions of what is approved, comments per revision, automated checks, agents as approvers, a configurable requirement menu | `Approvals.kt`, `Comments.kt`, `v028`–`v040` | [approvals](docs/approvals.md) · [comments](docs/comments.md#on-a-request-and-at-a-revision) |
+| *(not in the note)* items: open loops from captured and derived sources, a fixed ordering rule, the shown / picked / snoozed / done event log, delegation to an agent | `Items.kt`, `/api/items`, `v042`–`v044` | [items](docs/items.md) |
+| *(not in the note)* static API tokens, proxy-attested sign-in, container deploy | `Auth.kt`, `deploy/` | [operations](docs/operations.md) |
 | *(not in the note)* ownership per aspect, coverage, dependency edges, aspect-resolved rules, break-glass | `Ownership.kt`, `Approvals.kt`, `v017`–`v023` | [ownership](docs/ownership.md) |
 
 Every endpoint: [docs/api.md](docs/api.md). Config, auth, deploy notes: [docs/operations.md](docs/operations.md).
@@ -145,10 +163,13 @@ All nine recordings on one page, playable in the browser: <https://tcj.io/s/fhz0
 src/main/kotlin/tcj/tlc/   TlcApp TlcModule TlcConfig · Db (tx + SQL helpers) · Auth (actors, tlcers)
                            Entities · Tags · Logs · Comments · Approvals (directory, rules, engine, approvables, outbox)
                            Ownership (claims, cells, coverage, edges, party resolution)
+                           Items (open loops: capture, whole-set sync, ordering, events, delegation)
                            Feeds (publisher, transport, background loop) · Web (pages, /api/info, /api/summary)
-src/main/resources/        migrations/v001…v040 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
-src/test/kotlin/tcj/tlc/   TlcServiceTest (HTTP + MySQL) · ApprovalEngineTest
+src/main/resources/        migrations/v001…v044 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
+src/test/kotlin/tcj/tlc/   TlcServiceTest (HTTP + MySQL) · TlcOidcTest (the verified ways in) · ApprovalEngineTest
 scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-restart.sh · ui_smoke.py · ui_shots.py
+                           loops-checkpoint.py (a Claude Code hook: session work -> logs, and an open-loops reminder)
+deploy/                    Dockerfile · docker-compose.yml · tlc.yaml.example · Caddyfile.example
 ```
 
 ## Not done (on purpose, so far)
@@ -163,4 +184,6 @@ scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-rest
 - **The dependency graph is hand-fed.** Nothing syncs edges from a real rule engine; `POST /api/edges` is the integration point. Edges are current-state only.
 - **Safe direction is not modelled.** Break-glass assumes the action is reversible and leaves "is off safer than on" to the rule author (see `docs/ownership.md`).
 - **Scale shortcuts**, each marked in code: tag state is folded from the op log per query; ownership coverage folds a whole type in memory (capped at 20k records); "my queue" scans up to 1000 pending approvables; lists are `limit`-capped without cursors (feeds and logs have cursors).
-- Not deployed anywhere; runs on this Mac against the native mysqld.
+- **Items are not a feed.** Consumers poll `GET /api/items`; there is no `/_feeds/fetch/items`, and no page for items in the bundled console.
+- **Item order is a fixed rule.** The event log a learned ranking needs is recorded; nothing reads it yet.
+- **Delegated work is run elsewhere.** TLC queues the request and stores the result; the worker that runs an agent is not part of this repo.

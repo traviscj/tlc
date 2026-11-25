@@ -1,7 +1,8 @@
 # API
 
-JSON over HTTP. Identity: `X-TLC-User: <ldap>` and/or `X-TLC-Service: <name>` on every `/api` and
-`/_feeds` call (401 without). POST/PUT/PATCH need `Content-Type: application/json` and a JSON body
+JSON over HTTP. Identity on every `/api` and `/_feeds` call (401 without): in dev, `X-TLC-User: <ldap>` and/or
+`X-TLC-Service: <name>`; deployed, a static `Authorization: Bearer tlc_…` token, an OIDC bearer JWT, or the
+proxy's attested user (`docs/operations.md`). POST/PUT/PATCH need `Content-Type: application/json` and a JSON body
 (`{}` is fine). Timestamps: ISO-8601 UTC out; ISO or epoch-ms in. Nulls are omitted from responses.
 `limit` defaults to 200, max 1000.
 
@@ -24,6 +25,23 @@ Errors are plain text with the status: **400** malformed · **401** no identity 
 | GET | `/api/tlcers` · `/api/me` | everyone who has acted · the caller (`ldap, service, admin, directory_groups`) |
 | PATCH | `/api/me` | `{display_name}` |
 | GET | `/api/info` | settings, row counts, requirement / state / level enums, feeds, token prefixes |
+
+## Items
+
+Open loops; rules and ordering in `docs/items.md`. `I` = an item token (`I-…`).
+
+| | | |
+|---|---|---|
+| POST | `/api/items` | `{title, kind?, detail?, url?, due_at?, priority?, key?, source?}`: capture; the same `(source, key)` again updates it, and reopens it if closed |
+| POST | `/api/items/sync` | `{source?, items:[{key, title, kind?, …}]}`: a derived source's whole current set → `{opened, updated, reopened, closed, open}` |
+| GET | `/api/items?state=open\|snoozed\|done\|dropped\|all&source=&kind=&run=&assigned=&limit=` | `{items:[…], counts:{open, snoozed, done, dropped}}`, by score |
+| GET | `/api/items/{I}` | `{item, events:[{at, kind, actor, surface?, other?, detail?}]}` |
+| POST | `/api/items/{I}/done` · `/drop` · `/reopen` | `{surface?, note?}` |
+| POST | `/api/items/{I}/snooze` | `{seconds}` or `{until}` |
+| POST | `/api/items/{I}/delegate` · `/recall` | `{to?: "claude", note?, surface?}` → `run_state: QUEUED`; 409 while one is queued or running. Recall un-queues an unclaimed one |
+| POST | `/api/items/{I}/run` | the worker: `{state: RUNNING}` claims (once), then `{state: DONE\|NEEDS_YOU\|FAILED, result}` |
+| POST | `/api/items/shown` | `{tokens:[I…], surface}`: these were put in front of the person |
+| POST | `/api/items/pick` | `{winner, loser, surface}`: asked which of two matters more |
 
 ## Tags
 

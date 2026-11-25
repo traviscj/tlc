@@ -100,6 +100,8 @@ erDiagram
 | `approval_rule_checks` | icuv | `approval_rule_token`, `name`, `description`, `reporter`, `min_value`, `max_value`, `unit` | UNIQUE (rule, name) |
 | `approvable_checks` | id, created_at | `approvable_id`, `revision_seq`, `revision`, `name`, `status`, `value`, `summary`, `url`, `reported_by` | CHECK status ∈ PENDING/PASS/FAIL; KEY (approvable, seq, name, id); **append-only**, latest per (seq, name) counts |
 | `agents` | icuv | `name`, `operator`, `description` | UNIQUE name: directory stand-in, "is an agent" half |
+| `items` | id, created/updated ms, token | `source`, `source_key`, `kind`, `title`, `detail`, `url`, `state` (OPEN/DONE/DROPPED), `snoozed_until_ms`, `due_at_ms`, `priority` (source's hint), `derived`, `cleared`, `last_seen_ms`, `closed_at_ms`, `closed_by`, `assigned_to`, `run_state`, `run_at_ms`, `run_result` | UNIQUE (source, source_key); KEY (state, snoozed_until_ms). Not a feed |
+| `item_events` | id, at_ms | `item_id`, `kind` (CREATED/SHOWN/PICKED/SNOOZED/DONE/DROPPED/REOPENED/RESOLVED/DELEGATED/RECALLED/RUN), `actor`, `surface`, `other_item_id`, `detail` | KEYs (item_id, id), (kind, at_ms); **append-only** |
 | `approvable_parties` | id, created_at | `approvable_id`, `directory_group`, `mode`, `aspects`, `status`, `source`, `via`, `slack_channel`, `email` | UNIQUE (approvable, group) — frozen at filing |
 
 `approvables` gained `mode` (`APPROVE` \| `RATIFY`), `expires_at_ms`, `acting_group` in `v023`, and
