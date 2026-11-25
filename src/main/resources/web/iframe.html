@@ -14,5 +14,7 @@ const p = TLC.panel(document.getElementById('p'), {target, panels, onrender: tel
 if (TLC.qs.get('thread')) p.openThread(TLC.qs.get('thread'));
 if (!TLC.user) document.getElementById('p').innerHTML = '<div class=warn>no identity: pass ?user=&lt;ldap&gt; (dev) or front TLC with a proxy that sets X-TLC-User</div>';
 else TLC.poll(() => p.refresh(), Math.max(2000, +TLC.qs.get('interval') || 5000));
+let started = !!TLC.user;
+document.addEventListener('tlc:user', () => { if (!started) { started = true; TLC.poll(() => p.refresh(), Math.max(2000, +TLC.qs.get('interval') || 5000)); } });
 </script>
 </body></html>

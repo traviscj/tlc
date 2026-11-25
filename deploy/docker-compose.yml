@@ -1,0 +1,22 @@
+# deploy/tlc.yaml (gitignored; copy tlc.yaml.example). Create the database and its user first (deploy/README.md).
+# If docker's default address pools collide with your LAN, pin TLC_SUBNET in .env.
+services:
+  tlc:
+    image: tlc:local
+    container_name: tlc
+    restart: unless-stopped
+    ports:
+      - "${TLC_BIND:-127.0.0.1:8790}:8790"      # put an authenticating, TLS-terminating proxy in front
+    volumes:
+      - ./tlc.yaml:/config/tlc.yaml:ro
+    extra_hosts:
+      - "host.docker.internal:host-gateway"     # reach a mysqld published on the host
+      # Split-horizon DNS: if containers can't resolve your OIDC issuer, map it here.
+      - "${OIDC_HOST:-oidc.invalid}:${OIDC_HOST_IP:-127.0.0.1}"
+    networks: [tlc]
+
+networks:
+  tlc:
+    ipam:
+      config:
+        - subnet: ${TLC_SUBNET:-172.31.251.0/24}

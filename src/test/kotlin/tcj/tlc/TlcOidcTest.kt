@@ -27,6 +27,8 @@ class TlcOidcTestModule : KAbstractModule() {
         oidc = OidcAuthConfig(issuer = FakeIdp.issuer, audiences = listOf("tlc")),
         oidc_admin_groups = listOf("tlc-admins"),
         oidc_services = mapOf("client-sentinel" to "sentinel"),
+        api_tokens = mapOf(sha256Hex("tlc_hook-secret") to "hooks"),
+        proxy_auth = ProxyAuthConfig(secret_sha256 = sha256Hex("proxy-secret")),
       ),
     )
     install(MiskTestingServiceModule())
@@ -81,6 +83,33 @@ class TlcOidcTest {
     assertThat(code).isEqualTo(200)
     assertThat(body["ldap"]).isEqualTo("alice")
     assertThat(body["admin"]).isEqualTo(false)
+  }
+
+  @Test
+  fun `the proxy's word counts only with the proxy's secret`() {
+    assertThat(me("X-Remote-User" to "alice").first).isEqualTo(401)
+    assertThat(me("X-Remote-User" to "alice", "X-TLC-Proxy-Secret" to "guess").first).isEqualTo(401)
+    assertThat(me("X-TLC-Proxy-Secret" to "proxy-secret").first).isEqualTo(401)          // the proxy named nobody
+    val (code, alice) = me("X-Remote-User" to "Alice", "X-TLC-Proxy-Secret" to "proxy-secret", "X-TLC-User" to "root")
+    assertThat(code).isEqualTo(200)
+    assertThat(alice["ldap"]).isEqualTo("alice")                                        // not root: X-TLC-User is not the proxy's header
+    assertThat(alice["admin"]).isEqualTo(false)
+    assertThat(me("X-Remote-User" to "bob", "X-Remote-Groups" to "staff, tlc-admins", "X-TLC-Proxy-Secret" to "proxy-secret").second["admin"]).isEqualTo(true)
+    assertThat(me("X-Remote-User" to "root", "X-TLC-Proxy-Secret" to "proxy-secret").second["admin"]).isEqualTo(true)
+  }
+
+  @Test
+  fun `a static api token is its service, may name a human, and is never admin`() {
+    val (code, svc) = me("Authorization" to "Bearer tlc_hook-secret")
+    assertThat(code).isEqualTo(200)
+    assertThat(svc["service"]).isEqualTo("hooks")
+    assertThat(svc["ldap"]).isNull()
+    val (_, forRoot) = me("Authorization" to "Bearer tlc_hook-secret", "X-TLC-User" to "root")
+    assertThat(forRoot["ldap"]).isEqualTo("root")
+    assertThat(forRoot["service"]).isEqualTo("hooks")
+    assertThat(forRoot["admin"]).isEqualTo(false)       // root is in tlc.admins, but not through a service
+    assertThat(me("Authorization" to "Bearer tlc_wrong").first).isEqualTo(401)
+    assertThat(me("Authorization" to "Bearer ${sha256Hex("tlc_hook-secret")}").first).isEqualTo(401)   // the hash is not a credential
   }
 
   @Test

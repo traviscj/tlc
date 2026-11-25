@@ -59,6 +59,17 @@ tlc:
 - A token whose `sub` is in `oidc_services` is that service. It may name the human it acts for in
   `X-TLC-User`; a human named that way is never an admin.
 - Revocation is not checked: a token is good until its `exp`.
+- **Static API tokens** (`tlc.api_tokens`) are the other machine path, for callers that should not need the
+  issuer to be up or do a token exchange per call (hooks, cron). `scripts/tlc mint-token <service>` prints a
+  `tlc_…` token on stdout and, on stderr, the `"<sha256>": <service>` line for `tlc.api_tokens`; only the hash
+  is ever stored. Such a caller is that service, may name the human it acts for in `X-TLC-User`, and is never
+  an admin. Revoke by deleting the line and restarting. The CLI sends `TLC_TOKEN` (or the first line of
+  `~/.config/tlc/token`) as the bearer.
+- **People through an authenticating proxy** (`tlc.proxy_auth`). An oauth2-proxy session lasts days and the access
+  token it began with lasts an hour, so forwarding that token gets people a 401 after the first hour. Instead the
+  proxy names the signed-in user (`X-Remote-User`, groups in `X-Remote-Groups`) and sends a shared secret
+  (`X-TLC-Proxy-Secret`; config holds its SHA-256). Without the secret those headers mean nothing; the proxy must
+  strip all three from client requests. `deploy/Caddyfile.example` has the vhost.
 - If TLC runs in a container, the issuer hostname must resolve from inside it.
 - Smoke test against the real issuer:
   `OIDC_LIVE_ISSUER=https://id.example.net ./gradlew test --tests '*OidcAuthTest*' -i` in `misk-oidc`
@@ -78,9 +89,9 @@ Capabilities: every identified caller has `tlc_user`; admins also have `tlc_admi
 `AccessControlModule` is installed (misk's `@Authenticated` is inert without it); the test suite
 asserts the 401/403 paths in both modes.
 
-The bundled pages still take the viewer's name from `?user=` for display and for the header they
-send. Under OIDC the header is ignored and the API acts as the token's user, but the pages do not
-yet read `/api/me` to learn who that is.
+The bundled pages ask `/api/me` who the viewer is at load. Behind an authenticating proxy that answers,
+the name is shown read-only and `?user=` is ignored; in trusted-header mode it does not answer and the
+pages take the name from `?user=` / the "as" box as before.
 
 ## Background work
 

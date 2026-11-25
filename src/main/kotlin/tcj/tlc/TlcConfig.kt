@@ -44,8 +44,31 @@ data class TlcSettings(
   val oidc_admin_groups: List<String> = listOf(),
   /** With `oidc`: token `sub` -> service name, for machine callers (client-credentials tokens). */
   val oidc_services: Map<String, String> = mapOf(),
+  /**
+   * Static bearer tokens for machine callers that should not depend on the issuer (hooks, cron):
+   * SHA-256 hex of the token -> service name. The token itself must start with `tlc_` and is never
+   * stored. `scripts/tlc mint-token <service>` prints a token and the line to put here.
+   */
+  val api_tokens: Map<String, String> = mapOf(),
+  /**
+   * People arriving through an authenticating reverse proxy (oauth2-proxy in forward-auth mode): the
+   * proxy names the signed-in user in a header and proves it is the proxy with a shared secret. A
+   * proxy session outlives the access token it started with, so the token itself is no use here.
+   */
+  val proxy_auth: ProxyAuthConfig? = null,
 ) {
-  override fun toString() = "TlcSettings(public_url=$public_url, admins=$admins, oidc=${oidc?.issuer ?: "off"}, slack_webhook=${if (slack_webhook_url != null) "████" else "none"})"
+  override fun toString() = "TlcSettings(public_url=$public_url, admins=$admins, oidc=${oidc?.issuer ?: "off"}, proxy_auth=${if (proxy_auth != null) "on" else "off"}, slack_webhook=${if (slack_webhook_url != null) "████" else "none"})"
+}
+
+data class ProxyAuthConfig(
+  /** SHA-256 hex of the value the proxy sends in [secret_header]. Without a match the other headers mean nothing. */
+  val secret_sha256: String,
+  val secret_header: String = "X-TLC-Proxy-Secret",
+  val user_header: String = "X-Remote-User",
+  /** Comma-separated issuer groups; members of `oidc_admin_groups` are admins. null = not sent. */
+  val groups_header: String? = "X-Remote-Groups",
+) {
+  override fun toString() = "ProxyAuthConfig(user_header=$user_header, groups_header=$groups_header, secret=████)"
 }
 
 @Qualifier

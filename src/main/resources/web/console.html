@@ -36,7 +36,13 @@ addEventListener('hashchange', async () => {
 $('tf').onsubmit = e => { e.preventDefault(); go($('t').value.trim()); $('t').blur(); };
 $('as').value = TLC.user;
 $('as').onchange = () => { TLC.setUser($('as').value); $('as').blur(); tick(); panel.refresh(); };
-const showErr = e => { $('err').textContent = e ? String(e.message || e) : ''; };
+// A 401, or a fetch that died on the proxy's cross-origin redirect to its login page, means the session ended:
+// a full page load goes through the proxy's sign-in and comes back here.
+const showErr = e => {
+  const el = $('err'), m = e ? String(e.message || e) : '';
+  el.textContent = m;
+  if (/\b401\b|Failed to fetch|Load failed/.test(m)) { const a = document.createElement('a'); a.href = location.href; a.textContent = ' · sign in'; el.append(a); }
+};
 
 async function load() {
   const [info, me, types, ents, tags, aps, mine, rules, reg, notes, feeds, logs, tlcers] = await Promise.all([
@@ -110,5 +116,6 @@ const tick = TLC.poll(async () => {
 }, 5000);
 $('t').value = panel.target;
 if (!TLC.user) showErr('set "as" to an ldap to begin (trusted-header auth; see docs/operations.md)');
+document.addEventListener('tlc:user', () => { $('as').value = TLC.user; $('as').disabled = true; $('as').title = 'signed in: identity comes from the proxy'; showErr(''); tick(); panel.refresh(); });
 </script>
 </body></html>

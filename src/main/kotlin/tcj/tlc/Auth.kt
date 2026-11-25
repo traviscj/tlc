@@ -17,7 +17,12 @@ const val ADMIN = "tlc_admin"
 const val USER_HEADER = "X-TLC-User"
 const val SERVICE_HEADER = "X-TLC-Service"
 
+const val API_TOKEN_PREFIX = "tlc_"
+
 private val LDAP_RE = Regex("[a-z0-9][a-z0-9._-]{0,63}")
+
+fun sha256Hex(s: String): String =
+  java.security.MessageDigest.getInstance("SHA-256").digest(s.toByteArray()).joinToString("") { "%02x".format(it) }
 
 /**
  * Who is acting. A human (`ldap`), a service, or a service acting for a human (both). TLC records
@@ -35,6 +40,13 @@ data class Actor(val ldap: String?, val service: String?, val admin: Boolean) {
  *   [OidcVerifier]). X-TLC-User alone means nothing. A human is their username claim; a token whose
  *   `sub` is listed in `tlc.oidc_services` is that service, and may name the human it acts for in
  *   X-TLC-User (it never gets admin that way).
+ * - `tlc.api_tokens`: a bearer token starting `tlc_` whose SHA-256 is listed there is that service,
+ *   with the same rules as an `oidc_services` caller. Checked before the issuer, so these callers
+ *   keep working while the issuer is down. An unknown `tlc_` token is nobody, in either mode.
+ * - `tlc.proxy_auth`: a request carrying the proxy's secret is the person the proxy names (admin by
+ *   `tlc.admins` or by a group in `oidc_admin_groups`). The secret is what makes the header mean
+ *   something; the proxy must also strip these headers from what clients send.
+ * - Setting any of `oidc` / `proxy_auth` turns the trusted headers off.
  * - `tlc.oidc` unset: trusted headers. Identity is whatever X-TLC-User / X-TLC-Service say, which
  *   is only sound on localhost or behind a proxy that overwrites them. See docs/operations.md.
  */
@@ -51,6 +63,22 @@ class Actors @Inject constructor(
     val headerLdap = h[USER_HEADER]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
     if (headerLdap != null && !LDAP_RE.matches(headerLdap)) return null
 
+    val bearer = h["Authorization"]?.trim()?.takeIf { it.startsWith("Bearer ", ignoreCase = true) }?.substring(7)?.trim()
+    if (bearer != null && bearer.startsWith(API_TOKEN_PREFIX)) {
+      val service = config.tlc.api_tokens[sha256Hex(bearer)] ?: return null
+      return Actor(headerLdap, service, admin = false)
+    }
+
+    config.tlc.proxy_auth?.let { p ->
+      val secret = h[p.secret_header]
+      if (secret != null) {
+        if (!java.security.MessageDigest.isEqual(sha256Hex(secret).toByteArray(), p.secret_sha256.lowercase().toByteArray())) return null
+        val ldap = h[p.user_header]?.trim()?.lowercase()?.takeIf(LDAP_RE::matches) ?: return null
+        val groups = p.groups_header?.let { h[it] }.orEmpty().split(',').map { it.trim() }.filter { it.isNotEmpty() }
+        return Actor(ldap, null, ldap in config.tlc.admins || groups.any { it in config.tlc.oidc_admin_groups })
+      }
+    }
+
     if (verifier != null) {
       val id = verifier.authenticate { h[it] } ?: return null
       config.tlc.oidc_services[id.subject]?.let { service -> return Actor(headerLdap, service, admin = false) }
@@ -58,6 +86,7 @@ class Actors @Inject constructor(
       return Actor(ldap, null, ldap in config.tlc.admins || id.groups.any { it in config.tlc.oidc_admin_groups })
     }
 
+    if (config.tlc.proxy_auth != null) return null
     val service = h[SERVICE_HEADER]?.trim()?.lowercase()?.takeIf { it.isNotEmpty() }
     if (headerLdap == null && service == null) return null
     if (service != null && !LDAP_RE.matches(service)) return null
@@ -65,7 +94,7 @@ class Actors @Inject constructor(
   }
 
   fun current(): Actor = currentOrNull()
-    ?: throw UnauthorizedException(if (verifier != null) "send Authorization: Bearer <token>" else "send $USER_HEADER and/or $SERVICE_HEADER")
+    ?: throw UnauthorizedException(if (verifier != null || config.tlc.proxy_auth != null) "send Authorization: Bearer <token>" else "send $USER_HEADER and/or $SERVICE_HEADER")
 }
 
 class TlcAuthenticator @Inject constructor(private val actors: Actors) : MiskCallerAuthenticator {

@@ -1,0 +1,22 @@
+# Copy to deploy/tlc.yaml (gitignored). Layered over tlc-common.yaml via TLC_CONFIG. Holds the secrets.
+data_source:
+  host: host.docker.internal
+  database: tlc
+  username: tlc
+  password: CHANGEME
+
+tlc:
+  public_url: https://tlc.example.net
+  admins: [you]
+  auto_register_entity_types: false
+  oidc:
+    issuer: https://id.example.net
+    # The client ids whose bearer tokens are accepted (client-credentials callers, CLI device logins).
+    audiences: [tlc]
+  # oidc_admin_groups: [tlc-admins]
+  # People through the proxy (deploy/Caddyfile.example): sha256 of the secret the proxy sends.
+  # proxy_auth: { secret_sha256: "<sha256 hex>" }
+  # oidc_services: { "<client-credentials token sub>": some-service }
+  # Static tokens for hooks and cron: `scripts/tlc mint-token <service>` prints the token and this line.
+  # api_tokens:
+  #   "<sha256 hex>": hooks

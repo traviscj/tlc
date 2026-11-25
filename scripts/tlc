@@ -4,7 +4,10 @@
   tlc [--url U] [--as LDAP] [--service SVC] [--json] NOUN VERB [args]
 
 Every noun takes both verb spellings:  create|read|update|destroy  ==  mk|ls/show|edit|rm
-Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE.
+Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE, TLC_TOKEN (a bearer token: a static
+`tlc_…` API token or an OIDC JWT; else the first line of ~/.config/tlc/token when that file exists).
+
+  tlc mint-token SERVICE        print a new static API token and the tlc.api_tokens line that admits it
 
   tlc type mk sentinel/proposed_changes [--url-template 'https://…/{id}']
   tlc entity mk sentinel/proposed_changes/1234 --name 'raise TR limit' | ls | show REF | edit REF --name N | rm REF
@@ -44,6 +47,7 @@ def call(method, path, body=None, **params):
     headers = {}
     if A.user: headers["X-TLC-User"] = A.user
     if A.service: headers["X-TLC-Service"] = A.service
+    if TOKEN: headers["Authorization"] = "Bearer " + TOKEN
     if method in ("POST", "PUT", "PATCH"):
         data = json.dumps({k: v for k, v in (body or {}).items() if v is not None}).encode()
         headers["Content-Type"] = "application/json"
@@ -444,6 +448,26 @@ def bad(v):
 NOUNS = {"type": n_type, "entity": n_entity, "tag": n_tag, "log": n_log, "thread": n_thread, "comment": n_comment, "group": n_group, "agent": n_agent, "rule": n_rule, "ap": n_ap, "approvable": n_ap, "feed": n_feed, "own": n_own, "ownership": n_own, "edge": n_edge}
 
 
+def _token():
+    t = os.environ.get("TLC_TOKEN")
+    if t is None:
+        try:
+            t = open(os.path.expanduser("~/.config/tlc/token")).readline()
+        except OSError:
+            t = ""
+    return t.strip()
+
+
+TOKEN = _token()
+
+
+def mint_token(service):
+    import hashlib, secrets
+    tok = "tlc_" + secrets.token_urlsafe(32)
+    print(tok)
+    print(f'# tlc.api_tokens:  "{hashlib.sha256(tok.encode()).hexdigest()}": {service}', file=sys.stderr)
+
+
 def main():
     global A
     p = argparse.ArgumentParser(prog="tlc", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -468,6 +492,8 @@ def main():
     for f in ("all", "admin", "force", "once", "ratify"): p.add_argument("--" + f, action="store_true")
     A = p.parse_intermixed_args()
     if A.service and "TLC_USER" not in os.environ and "--as" not in sys.argv: A.user = ""  # a service speaks for itself unless told otherwise
+    if A.noun == "mint-token":
+        return mint_token(A.verb) if A.verb else sys.exit("tlc mint-token SERVICE")
     if A.noun == "summary": return emit(call("GET", "/api/summary", target=A.verb))
     if A.noun in ("info", "me"): return emit(call("GET", "/api/" + A.noun))
     if A.noun not in NOUNS or not A.verb: sys.exit(__doc__.strip())

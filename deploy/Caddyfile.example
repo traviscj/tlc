@@ -1,0 +1,25 @@
+# TLC behind oauth2-proxy (forward-auth). People: the proxy names them and Caddy adds the shared secret.
+# Machines: a static `tlc_…` bearer token skips the gate; TLC checks it.
+(tlc_gate) {
+	forward_auth 127.0.0.1:4180 {
+		uri /oauth2/auth?allowed_groups={args[0]}
+		copy_headers X-Auth-Request-Preferred-Username>X-Remote-User X-Auth-Request-Groups>X-Remote-Groups
+		@unauth status 401
+		handle_response @unauth {
+			redir * https://auth.example.net/oauth2/start?rd={scheme}://{host}{uri}
+		}
+	}
+}
+
+tlc.example.net {
+	@token header Authorization "Bearer tlc_*"
+	route {
+		request_header -X-Remote-User
+		request_header -X-Remote-Groups
+		request_header -X-TLC-Proxy-Secret
+		reverse_proxy @token 127.0.0.1:8790
+		import tlc_gate tlc-users
+		request_header X-TLC-Proxy-Secret "CHANGEME-long-random"     # tlc.proxy_auth.secret_sha256 is its SHA-256
+		reverse_proxy 127.0.0.1:8790
+	}
+}

@@ -223,5 +223,12 @@ const TLC = (() => {
     return tick;
   }
 
-  return {api, q, esc, ts, age, table, panel, poll, qs, get user() { return user; }, setUser};
+  // Behind an authenticating proxy (tlc.oidc) the server knows who this is; nothing typed here can change it.
+  // /api/me without X-TLC-User answers only then, so trusted-header (dev) mode is left exactly as it was.
+  let verified = false;
+  const ready = fetch('/api/me', {signal: AbortSignal.timeout(8000)}).then(r => r.ok ? r.json() : null).then(m => {
+    if (m && m.ldap) { setUser(m.ldap); verified = true; document.dispatchEvent(new CustomEvent('tlc:user', {detail: m})); }
+  }).catch(() => {});
+
+  return {api, q, esc, ts, age, table, panel, poll, qs, get user() { return user; }, get verified() { return verified; }, setUser, ready};
 })();
