@@ -40,5 +40,6 @@ class TlcModule(private val config: TlcConfig) : KAbstractModule() {
     install(WebActionModule.create<ApprovableActions>())
     install(WebActionModule.create<OwnershipActions>())
     install(WebActionModule.create<EdgeActions>())
+    install(WebActionModule.create<ItemActions>())
   }
 }

@@ -51,7 +51,7 @@ class TlcServiceTest {
     // MiskTestingServiceModule pins the clock (to 2018); the scenarios below are written against late 2026.
     clock.setNow(java.time.Instant.parse("2026-11-10T12:00:00Z"))
     db.tx { c ->
-      for (t in listOf("external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "feed_cursors", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks", "agents")) c.exec("DELETE FROM $t")
+      for (t in listOf("items", "item_events", "external_entity_types", "external_entities", "tlcers", "tags", "taggings", "log_entries", "threads", "comments", "likes", "approval_rules", "approval_rule_groups", "approvables", "approvals", "directory_memberships", "notifications", "sequences", "feed_cursors", "ownerships", "ownership_aspects", "entity_edges", "directory_groups", "approval_rule_aspects", "approvable_parties", "approval_rule_types", "approvable_impacts", "approvable_revisions", "approval_rule_checks", "approvable_checks", "agents")) c.exec("DELETE FROM $t")
     }
     post("/api/entity-types", mapOf("source_service" to "sentinel", "source_entity" to "proposed_changes", "url_template" to "https://sentinel.example/pc/{id}"))
   }
@@ -1065,5 +1065,74 @@ class TlcServiceTest {
     ok(post("/api/approvables/$ap3/decline", mapOf("reason" to "false alarm"), "dave"))
     assertThat(state(ap3)).isEqualTo("REVERTED")
     assertThat(ok(get("/api/logs?target=$s&source=tlc.approvals")).list("entries").map { it["message"] as String }).anyMatch { it.contains("BREAK-GLASS by bob (trust-infra)") }
+  }
+
+  // ------------------------------------------------------------------------------ items (open loops)
+
+  private fun titles(path: String = "/api/items") = get(path).list("items").map { it["title"] }
+
+  @Test
+  fun `open items are ordered by kind and age until a deadline gets close`() {
+    post("/api/items", mapOf("title" to "an idea", "kind" to "idea"))
+    post("/api/items", mapOf("title" to "a todo"))
+    post("/api/items", mapOf("title" to "claude needs an answer", "kind" to "question"))
+    post("/api/items", mapOf("title" to "bins out tonight", "kind" to "chore", "due_at" to "2026-11-10T14:00:00Z"))
+    post("/api/items", mapOf("title" to "taxes", "kind" to "todo", "due_at" to "2026-12-20T00:00:00Z"))
+    assertThat(titles()).containsExactly("bins out tonight", "claude needs an answer", "a todo", "taxes", "an idea")
+    // two weeks on, the idea has drifted up by 1 but still sits under a fresh todo's ceiling; the far deadline is now near
+    clock.setNow(java.time.Instant.parse("2026-12-19T12:00:00Z"))
+    assertThat(titles().take(2)).containsExactly("bins out tonight", "taxes")
+    assertThat(ItemStore.priority("idea", null, 0, null, 14 * 86_400_000L)).isEqualTo(2.0)
+    assertThat(ItemStore.priority("todo", null, 0, 3_600_000L * 24, 0)).isEqualTo(3.679)
+    assertThat(ItemStore.priority("todo", 7.5, 0, null, 0)).isEqualTo(7.5)
+  }
+
+  @Test
+  fun `snooze hides an item until its time, done and drop close it, and every touch is an event`() {
+    val a = post("/api/items", mapOf("title" to "call the roofer", "kind" to "property"))["token"] as String
+    val b = post("/api/items", mapOf("title" to "reply to dad", "kind" to "person"))["token"] as String
+    assertThat(post("/api/items/shown", mapOf("tokens" to listOf(a, b), "surface" to "far")).code).isEqualTo(200)
+    assertThat(post("/api/items/pick", mapOf("winner" to b, "loser" to a, "surface" to "deck")).code).isEqualTo(200)
+    post("/api/items/$a/snooze", mapOf("seconds" to 3600, "surface" to "deck"))
+    assertThat(titles()).containsExactly("reply to dad")
+    assertThat(get("/api/items").obj("counts")).containsEntry("open", 1.0).containsEntry("snoozed", 1.0)
+    clock.setNow(java.time.Instant.parse("2026-11-10T13:00:01Z"))
+    assertThat(titles()).containsExactly("call the roofer", "reply to dad")
+    assertThat(post("/api/items/$b/done", mapOf("surface" to "queue"))["closed_by"]).isEqualTo("alice")
+    post("/api/items/$a/drop", mapOf("note" to "sold the building"))
+    assertThat(titles()).isEmpty()
+    assertThat(titles("/api/items?state=dropped")).containsExactly("call the roofer")
+    val ev = get("/api/items/$a").list("events").map { it["kind"] }
+    assertThat(ev).containsExactly("DROPPED", "SNOOZED", "SHOWN", "CREATED")
+    assertThat(get("/api/items/$b").list("events").first { it["kind"] == "PICKED" }["other"]).isEqualTo(a)
+    post("/api/items/$a/reopen")
+    assertThat(titles()).containsExactly("call the roofer")
+    assertThat(post("/api/items/$a/snooze", mapOf("seconds" to -5)).code).isEqualTo(400)
+    assertThat(post("/api/items/I-nope/done").code).isEqualTo(404)
+  }
+
+  @Test
+  fun `a derived source closes what it stops reporting, and a person's close holds while the condition lasts`() {
+    fun sync(vararg keys: String) = post("/api/items/sync", mapOf("items" to keys.map { mapOf("key" to it, "title" to "$it is behind", "kind" to "deploy") }), user = null, service = "srcage")
+    var r = sync("inforad-net", "rrcli-web")
+    assertThat(listOf(r["source"], r["opened"], r["open"])).containsExactly("srcage", 2.0, 2.0)
+    assertThat(sync("inforad-net", "rrcli-web")["updated"]).isEqualTo(0.0)                  // nothing changed: no churn
+    r = sync("inforad-net")                                                                // rrcli-web got deployed
+    assertThat(listOf(r["closed"], r["open"])).containsExactly(1.0, 1.0)
+    assertThat(get("/api/items?state=done").list("items").single()["closed_by"]).isEqualTo("source")
+    assertThat(sync("inforad-net", "rrcli-web")["reopened"]).isEqualTo(1.0)                 // behind again: a new occurrence
+    val a = get("/api/items?source=srcage").list("items").first { it["key"] == "inforad-net" }["token"] as String
+    post("/api/items/$a/drop")                                                             // "I know, stop telling me"
+    assertThat(sync("inforad-net", "rrcli-web")["reopened"]).isEqualTo(0.0)
+    assertThat(titles()).containsExactly("rrcli-web is behind")
+    sync("rrcli-web")                                                                      // it cleared...
+    assertThat(sync("inforad-net", "rrcli-web")["reopened"]).isEqualTo(1.0)                 // ...and came back: worth saying again
+    assertThat(sync()["closed"]).isEqualTo(2.0)
+    // a capture with the same key twice is one item, and reopens when captured again after being closed
+    val k = post("/api/items", mapOf("title" to "push inforad", "key" to "push:inforad", "source" to "claude"))["token"]
+    assertThat(post("/api/items", mapOf("title" to "push inforad (9 commits)", "key" to "push:inforad", "source" to "claude"))["token"]).isEqualTo(k)
+    assertThat(titles()).containsExactly("push inforad (9 commits)")
+    assertThat(post("/api/items/sync", mapOf("source" to "srcage", "items" to listOf(mapOf("key" to "x", "title" to "t"), mapOf("key" to "x", "title" to "t")))).code).isEqualTo(400)
+    assertThat(post("/api/items", mapOf("kind" to "todo")).code).isEqualTo(400)
   }
 }

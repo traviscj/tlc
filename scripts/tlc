@@ -5,8 +5,12 @@
 
 Every noun takes both verb spellings:  create|read|update|destroy  ==  mk|ls/show|edit|rm
 Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE, TLC_TOKEN (a bearer token: a static
-`tlc_…` API token or an OIDC JWT; else the first line of ~/.config/tlc/token when that file exists).
+`tlc_…` API token or an OIDC JWT; else the first line of ~/.config/tlc/token). TLC_URL likewise falls back to
+~/.config/tlc/url.
 
+  tlc item add TITLE [--kind todo|idea|question|broken|deploy|commit|chore|person|property] [--due ISO] [--note DETAIL] [--key K] [--source S] [--link URL] [--value HINT]
+  tlc item ls [--state open|snoozed|done|dropped|all] [--source S] [--kind K] | show I-… | done I-… | drop I-… [--note WHY] | reopen I-…
+  tlc item snooze I-… (--ttl SECONDS | --due ISO) | pick WINNER LOSER | sync SOURCE < items.json   (a derived source's whole current set)
   tlc mint-token SERVICE        print a new static API token and the tlc.api_tokens line that admits it
 
   tlc type mk sentinel/proposed_changes [--url-template 'https://…/{id}']
@@ -170,6 +174,29 @@ def n_log(v):
             time.sleep(1.0)
             page = call("GET", "/api/logs", target=A.target, level=A.level, source=A.source, after_id=cursor, limit=200)
             rows, cursor = page["entries"], int(page["cursor"])
+    else: bad(v)
+
+
+def n_item(v):
+    cols = ["token", "score", "kind", "source", "title", "due=due_at", "snoozed=snoozed_until", "state", "created_at"]
+    body = lambda: {"surface": A.surface or "cli", "note": A.note}
+    if v in ("add", "mk"):
+        emit(call("POST", "/api/items", {"title": need(1, "item add TITLE"), "kind": A.kind, "due_at": A.due, "detail": A.note, "key": A.key, "source": A.source, "url": A.link, "priority": A.value}), None, cols)
+    elif v == "ls":
+        emit(call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit), "items", cols)
+    elif v == "show":
+        d = call("GET", "/api/items/" + need(1, "item show I-…"))
+        if A.json: return emit(d)
+        table([d["item"]], cols); print(); table(d["events"], ["at", "kind", "actor", "surface", "other", "detail"])
+    elif v in ("done", "drop", "reopen"):
+        emit(call("POST", f"/api/items/{need(1, 'item ' + v + ' I-…')}/{v}", body()), None, cols)
+    elif v == "snooze":
+        emit(call("POST", f"/api/items/{need(1, 'item snooze I-… --ttl SECONDS | --due ISO')}/snooze", {**body(), "seconds": A.ttl, "until": A.due}), None, cols)
+    elif v == "pick":
+        w, l = need(2, "item pick WINNER LOSER")
+        emit(call("POST", "/api/items/pick", {"winner": w, "loser": l, "surface": A.surface or "cli"}))
+    elif v == "sync":
+        emit(call("POST", "/api/items/sync", {"source": need(1, "item sync SOURCE < items.json"), "items": json.load(sys.stdin)}), None, ["source", "opened", "updated", "reopened", "closed", "open"])
     else: bad(v)
 
 
@@ -445,17 +472,20 @@ def bad(v):
     sys.exit(f"tlc: unknown verb '{v}' (see tlc --help)")
 
 
-NOUNS = {"type": n_type, "entity": n_entity, "tag": n_tag, "log": n_log, "thread": n_thread, "comment": n_comment, "group": n_group, "agent": n_agent, "rule": n_rule, "ap": n_ap, "approvable": n_ap, "feed": n_feed, "own": n_own, "ownership": n_own, "edge": n_edge}
+NOUNS = {"item": n_item, "type": n_type, "entity": n_entity, "tag": n_tag, "log": n_log, "thread": n_thread, "comment": n_comment, "group": n_group, "agent": n_agent, "rule": n_rule, "ap": n_ap, "approvable": n_ap, "feed": n_feed, "own": n_own, "ownership": n_own, "edge": n_edge}
+
+
+def _conf(name):
+    """First line of ~/.config/tlc/<name>, or ''."""
+    try:
+        return open(os.path.expanduser("~/.config/tlc/" + name)).readline().strip()
+    except OSError:
+        return ""
 
 
 def _token():
     t = os.environ.get("TLC_TOKEN")
-    if t is None:
-        try:
-            t = open(os.path.expanduser("~/.config/tlc/token")).readline()
-        except OSError:
-            t = ""
-    return t.strip()
+    return (_conf("token") if t is None else t).strip()
 
 
 TOKEN = _token()
@@ -471,7 +501,7 @@ def mint_token(service):
 def main():
     global A
     p = argparse.ArgumentParser(prog="tlc", description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
-    p.add_argument("--url", default=os.environ.get("TLC_URL", "http://localhost:8790"))
+    p.add_argument("--url", default=os.environ.get("TLC_URL") or _conf("url") or "http://localhost:8790")
     p.add_argument("--as", dest="user", default=os.environ.get("TLC_USER", os.environ.get("USER", "")))
     p.add_argument("--service", default=os.environ.get("TLC_SERVICE"))
     p.add_argument("--json", action="store_true")
@@ -479,7 +509,7 @@ def main():
     p.add_argument("verb", nargs="?")
     p.add_argument("args", nargs="*")
     for f in ("desc", "url-template", "name", "type", "q", "at", "known-at", "to", "note", "target", "tag", "level", "source", "body", "title", "creator", "parent",
-              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "slack", "email", "rev", "on-revision", "link", "operator", "agents"):
+              "token", "requirement", "context", "client-id", "requested-by", "state", "rule", "awaiting", "comment", "reason", "cursor-file", "role", "owner", "direction", "status", "kind", "due", "key", "surface", "slack", "email", "rev", "on-revision", "link", "operator", "agents"):
         p.add_argument(("-q" if f == "q" else "--" + f), default=None)
     p.add_argument("--from", dest="from_", default=None)
     p.add_argument("--group", action="append")
