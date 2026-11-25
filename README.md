@@ -49,6 +49,7 @@ mysql -uroot -h127.0.0.1 -e 'create database if not exists tlc_dev; create datab
 scripts/dev-restart.sh                     # …or: rebuild + restart in the background (log: build/tlc-run.log)
 scripts/seed.sh                            # the sentinel/proposed_changes/1234 scenario
 open http://localhost:8790/                # console        (type an ldap into "as")
+open http://localhost:8790/items           # the open loops: triage table, history, hand-to-an-agent
 open http://localhost:8790/demo            # a fake source-service page embedding the iframe
 scripts/demo.sh                            # all nine narrated demos (≈25 s; re-runnable, each run uses fresh ids)
 ./gradlew test                             # 43 tests: 32 over real HTTP + MySQL, 6 on auth, 5 on the approval engine
@@ -165,7 +166,7 @@ src/main/kotlin/tcj/tlc/   TlcApp TlcModule TlcConfig · Db (tx + SQL helpers) �
                            Ownership (claims, cells, coverage, edges, party resolution)
                            Items (open loops: capture, whole-set sync, ordering, events, delegation)
                            Feeds (publisher, transport, background loop) · Web (pages, /api/info, /api/summary)
-src/main/resources/        migrations/v001…v046 (one statement per file) · web/{console,iframe,demo}.html tlc.{js,css}
+src/main/resources/        migrations/v001…v046 (one statement per file) · web/{console,items,iframe,demo}.html tlc.{js,css}
 src/test/kotlin/tcj/tlc/   TlcServiceTest (HTTP + MySQL) · TlcOidcTest (the verified ways in) · ApprovalEngineTest
 scripts/                   tlc (CLI) · seed.sh · demo.sh · demos/ · dev-restart.sh · ui_smoke.py · ui_shots.py
                            loops-checkpoint.py (a Claude Code hook: session work -> logs, and an open-loops reminder)
@@ -184,6 +185,5 @@ deploy/                    Dockerfile · docker-compose.yml · tlc.yaml.example 
 - **The dependency graph is hand-fed.** Nothing syncs edges from a real rule engine; `POST /api/edges` is the integration point. Edges are current-state only.
 - **Safe direction is not modelled.** Break-glass assumes the action is reversible and leaves "is off safer than on" to the rule author (see `docs/ownership.md`).
 - **Scale shortcuts**, each marked in code: tag state is folded from the op log per query; ownership coverage folds a whole type in memory (capped at 20k records); "my queue" scans up to 1000 pending approvables; lists are `limit`-capped without cursors (feeds and logs have cursors).
-- **No page for items in the bundled console.** They are an API, a CLI noun and a feed (`/_feeds/fetch/items`).
 - **Item order is a fixed rule.** The event log a learned ranking needs is recorded; nothing reads it yet.
 - **Delegated work is run elsewhere.** TLC queues the request and stores the result; the worker that runs an agent is not part of this repo.

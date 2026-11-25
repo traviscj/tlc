@@ -66,6 +66,13 @@ Delegating records a request; TLC runs nothing. A worker claims the item, does t
 stays **open** with `run_state` and `run_result` on it: whoever asked reads the result and closes the item. While a
 result is waiting to be read the item's score is 1.5 higher.
 
+## Page
+
+`/items` is the list as a dense table, most pressing first, with the selected item's detail, any agent result and
+its full history beside it. Keys: `j`/`k` move, `d` done, `h`/`s`/`w` snooze an hour / a day / a week, `x` drop, `c` hand
+to an agent (again while queued = recall), `u` undo, `p` choose between two, `1`-`4` open / snoozed / done / dropped,
+`a` add (`?` prefix = question, `!` = todo), `r` blur the text. It reports what it shows (surface `console`).
+
 ## Feed
 
 `GET /_feeds/fetch/items` (see [feeds](feeds.md)) is every item in the order it last changed, latest state only, with

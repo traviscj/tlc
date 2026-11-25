@@ -23,6 +23,10 @@ class WebActions @Inject constructor(private val resources: ResourceLoader) : We
   @Get("/") @Unauthenticated @ResponseContentType(MediaTypes.TEXT_HTML)
   fun console() = page("console.html")
 
+  /** The open loops (docs/items.md): triage table, an item's history, hand-to-an-agent. */
+  @Get("/items") @Unauthenticated @ResponseContentType(MediaTypes.TEXT_HTML)
+  fun items() = page("items.html")
+
   /** Embeddable widget: `<iframe src="/iframe?target=sentinel/proposed_changes/1234&panels=approvals,tags,comments,logs">`. */
   @Get("/iframe") @Unauthenticated @ResponseContentType(MediaTypes.TEXT_HTML)
   fun iframe() = page("iframe.html")

@@ -12,7 +12,7 @@
 <div id="top"><b>TLC</b><span class="dim">tags · logs · comments · approvals · ownership · entities</span>
   <span>as <input id="as" size="10" placeholder="ldap"></span><span id="me" class="dim"></span>
   <span id="counts"></span><span style="flex:1"></span><span id="tick" class="dim"></span>
-  <a href="/demo">embed demo</a></div>
+  <a href="/items" id="itl">items</a> <a href="/demo">embed demo</a></div>
 <div id="err" class="err"></div>
 <div id="grid">
   <div id="c1"></div>
@@ -50,8 +50,8 @@ async function load() {
     api('GET', '/api/approvables?limit=30'), TLC.user ? api('GET', '/api/approvables?awaiting=me&limit=30').catch(() => ({approvables: []})) : {approvables: []},
     api('GET', '/api/approval-rules'), api('GET', '/api/directory'), api('GET', '/api/notifications?limit=12'), api('GET', '/_feeds/status'), api('GET', '/api/logs?limit=25'), api('GET', '/api/tlcers'),
   ]);
-  const [cov, gaps] = await Promise.all([api('GET', '/api/ownership/coverage'), api('GET', '/api/ownership/gaps?limit=14')]);
-  D = {info, me, types: types.entity_types, ents: ents.entities, tags: tags.tags, aps: aps.approvables, mine: new Set(mine.approvables.map(a => a.token)), rules: rules.rules, reg: reg.memberships, notes: notes.notifications, feeds: feeds.feeds, logs: logs.entries, tlcers: tlcers.tlcers, cov, gaps: gaps.cells};
+  const [cov, gaps, items] = await Promise.all([api('GET', '/api/ownership/coverage'), api('GET', '/api/ownership/gaps?limit=14'), api('GET', '/api/items?limit=1').then(r => r.counts, () => null)]);
+  D = {items, info, me, types: types.entity_types, ents: ents.entities, tags: tags.tags, aps: aps.approvables, mine: new Set(mine.approvables.map(a => a.token)), rules: rules.rules, reg: reg.memberships, notes: notes.notifications, feeds: feeds.feeds, logs: logs.entries, tlcers: tlcers.tlcers, cov, gaps: gaps.cells};
 }
 
 function draw() {
@@ -62,6 +62,7 @@ function draw() {
   $('me').innerHTML = D.me.ldap ? `${D.me.admin ? '<span class=warn>admin</span> ' : ''}${esc(D.me.directory_groups.join(',') || 'no groups')}` : '';
   $('counts').innerHTML = [['types', c.external_entity_types], ['entities', c.external_entities], ['tags', c.tags], ['taggings', c.taggings], ['logs', c.log_entries], ['threads', c.threads], ['comments', c.comments], ['likes', c.likes], ['rules', c.approval_rules], ['approvables', c.approvables], ['approvals', c.approvals], ['tlcers', c.tlcers]].map(([k, v]) => `<span><span class=dim>${k}</span> ${v}</span>`).join('');
   const adm = D.me.admin;
+  if (D.items) $('itl').innerHTML = `items <b class="${D.items.open ? 'warn' : 'dim'}">${D.items.open ?? 0}</b>`;
   $('c1').innerHTML =
     `<h2>entity types <small>${D.types.length}</small></h2>` + table([['service/entity', r => `<span class=b title="${esc(r.description || '')}">${esc(r.source_service)}/${esc(r.source_entity)}</span>`], ['n', r => r.entities, 'n'], ['token', r => `<span class=dim>${esc(r.token)}</span>`]], D.types) +
     `<form class=row data-form=type><input class=g name=type placeholder="service/entity"><button>register</button></form>` +

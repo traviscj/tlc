@@ -1,0 +1,166 @@
+<!doctype html>
+<html><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><link rel="icon" href="data:,"><title>TLC items</title>
+<link rel="stylesheet" href="/static/tlc.css">
+<style>
+#top{display:flex;gap:4px 10px;align-items:baseline;border-bottom:1px solid var(--line);padding-bottom:3px;flex-wrap:wrap}
+#top b.t{color:var(--info);letter-spacing:.1em}
+.chip{cursor:pointer;border:1px solid var(--line);border-radius:3px;padding:0 5px;background:none;font:inherit;color:inherit}
+.chip.on{border-color:var(--warn);color:var(--warn)}.chip b{font-weight:700}
+#add{width:46ch;max-width:100%}
+#age{padding:0 5px;border:1px solid currentColor;border-radius:3px}
+#wrap{display:grid;grid-template-columns:minmax(0,1fr) minmax(280px,34%);gap:0 10px;align-items:start}
+@media(max-width:900px){#wrap{grid-template-columns:1fr}}
+#list table{table-layout:fixed}
+#list td{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+#list tr.cur{background:#ffffff1c;outline:1px solid var(--warn);outline-offset:-1px}
+#list tr.cur td.title{white-space:normal}
+#list tbody tr{cursor:default}
+#list tr td:first-child{border-left:3px solid var(--c,transparent);font-weight:700}
+.k-question,.k-broken{--c:var(--bad)}.k-property{--c:var(--acc)}.k-chore,.k-person{--c:var(--warn)}.k-deploy,.k-commit{--c:var(--info)}.k-todo{--c:var(--ok)}.k-idea{--c:var(--line)}
+td.kind{color:var(--c,var(--dim))}td.title{font-weight:600}
+.soon{color:var(--warn);font-weight:700}.over{color:var(--bad);font-weight:700}
+.run{font-weight:700;padding:0 4px;border:1px solid currentColor;border-radius:3px;font-size:10px;margin-right:5px}
+.run-QUEUED,.run-RUNNING{color:var(--info)}.run-DONE{color:var(--ok)}.run-NEEDS_YOU{color:var(--warn)}.run-FAILED{color:var(--bad)}
+#detail{position:sticky;top:4px;border:1px solid var(--line);background:var(--bg2);padding:3px 7px;min-height:6em}
+#detail pre{white-space:pre-wrap;margin:3px 0;font:inherit}
+#detail h3{margin:2px 0;font:700 12px var(--mono)}
+#pick{display:none;grid-template-columns:1fr 1fr;gap:8px;margin:4px 0}#pick.on{display:grid}
+#pick div{border:1px solid var(--line);background:var(--bg2);padding:8px 10px;font-size:15px;font-weight:600;cursor:pointer}
+#pick div small{display:block;color:var(--dim);font-weight:400;font-size:11px}#pick div:hover{border-color:var(--warn)}
+body.redact td.title,body.redact #detail,body.redact #pick{filter:blur(6px)}
+col.c-score{width:5ch}col.c-kind{width:10ch}col.c-age{width:6ch}col.c-due{width:12ch}col.c-src{width:18ch}
+</style></head>
+<body>
+<div id="top"><b class="t">TLC</b><a href="/">console</a><b>items</b>
+  <span id="age" title="age of this list (polled every 20 s)">…</span><span id="tabs"></span>
+  <span>as <input id="as" size="10" placeholder="ldap"></span>
+  <span style="flex:1"></span>
+  <form id="af"><input id="add" placeholder="a  add: text, Enter (prefix ?: question, !: todo, else idea)" autocomplete="off"></form>
+</div>
+<div id="err" class="err"></div>
+<div class="dim">j/k move · <b>d</b> done · <b>h</b> 1h · <b>s</b> 1d · <b>w</b> 1w snooze · <b>x</b> drop · <b>c</b> hand to an agent (again = recall) · <b>u</b> undo · <b>p</b> pick between two · <b>1-4</b> open/snoozed/done/dropped · <b>r</b> redact</div>
+<div id="pick"></div>
+<div id="wrap">
+  <div id="list"><table>
+    <colgroup><col class="c-score"><col class="c-kind"><col class="c-age"><col class="c-due"><col><col class="c-src"></colgroup>
+    <thead><tr><th class="n" title="what the list is ordered by: kind weight + age, or a near deadline; +1.5 while an agent's result is unread">score</th><th>kind</th><th class="n">age</th><th>due</th><th>item</th><th>source</th></tr></thead>
+    <tbody id="rows"></tbody></table></div>
+  <div id="detail"><span class="dim">select an item</span></div>
+</div>
+<script src="/static/tlc.js"></script>
+<script>
+// Items (docs/items.md): the open loops, most pressing first. One poll loop (TLC.poll: self-rescheduling, parked while
+// hidden); every action is a POST followed by an immediate re-read. What is on screen is reported as shown, at most
+// once per item per hour per page load, because shown-and-passed-over is what a ranking gets learned from.
+const {api, esc, age: ago, ts} = TLC, $ = id => document.getElementById(id);
+const RUN = {QUEUED: 'queued', RUNNING: 'running', DONE: 'done', NEEDS_YOU: 'needs you', FAILED: 'failed'};
+const STATES = ['open', 'snoozed', 'done', 'dropped'], SHOWN_EVERY_MS = 3600e3;
+let state = 'open', data = null, cur = 0, last = null, okAt = 0, pair = null, detail = null, detailFor = null;
+const shownAt = new Map();
+try { if (localStorage.getItem('items.redact') === '1') document.body.classList.add('redact'); } catch (e) {}
+const showErr = e => {
+  const el = $('err'), m = e ? String(e.message || e) : '';
+  el.textContent = m;
+  if (/\b401\b|Failed to fetch|Load failed/.test(m)) { const a = document.createElement('a'); a.href = location.href; a.textContent = ' · sign in'; el.append(a); }
+};
+const span = s => s < 90 ? `${Math.round(s)}s` : s < 5400 ? `${Math.round(s / 60)}m` : s < 172800 ? `${Math.round(s / 3600)}h` : `${Math.round(s / 86400)}d`;
+function due(i, now) {
+  if (!i.due_at) return '';
+  const t = new Date(i.due_at) / 1000, left = t - now, d = new Date(t * 1000);
+  const when = d.toDateString() === new Date().toDateString() ? d.toLocaleTimeString([], {hour: '2-digit', minute: '2-digit', hour12: false}) : d.toLocaleDateString([], {weekday: 'short', month: 'numeric', day: 'numeric'});
+  return `<span class="${left < 0 ? 'over' : left < 86400 ? 'soon' : 'dim'}" title="${esc(i.due_at)}">${left < 0 ? 'over ' + span(-left) : when}</span>`;
+}
+function render() {
+  const now = Date.now() / 1000, items = data ? data.items : [], c = (data && data.counts) || {};
+  cur = Math.max(0, Math.min(cur, items.length - 1));
+  $('tabs').innerHTML = STATES.map((s, n) => `<button class="chip${s === state ? ' on' : ''}" data-s="${s}">${n + 1} ${s} <b>${c[s] ?? '·'}</b></button>`).join(' ');
+  $('rows').innerHTML = items.map((i, n) => `<tr class="k-${esc(i.kind)}${n === cur ? ' cur' : ''}" data-n="${n}">`
+    + `<td class="n">${i.score.toFixed(1)}</td><td class="kind">${esc(i.kind)}</td><td class="n dim" title="${esc(i.created_at)}">${ago(i.created_at)}</td>`
+    + `<td>${state === 'snoozed' && i.snoozed_until ? `<span class="dim">zz ${span(Math.max(0, new Date(i.snoozed_until) / 1000 - now))}</span>` : due(i, now)}</td>`
+    + `<td class="title" title="${esc(i.title)}">${i.run_state ? `<span class="run run-${esc(i.run_state)}">${esc(i.assigned_to || 'agent')} ${RUN[i.run_state] || esc(i.run_state)}</span>` : ''}${esc(i.title)}</td>`
+    + `<td class="dim">${esc(i.source)}</td></tr>`).join('') || `<tr><td colspan="6" class="dim">nothing ${state}</td></tr>`;
+  const a = okAt ? (Date.now() - okAt) / 1000 : null;
+  $('age').textContent = a == null ? '…' : span(a);
+  $('age').style.color = a == null ? 'var(--dim)' : a > 90 ? 'var(--bad)' : a > 45 ? 'var(--warn)' : 'var(--ok)';
+  const i = items[cur];
+  if (!i) { $('detail').innerHTML = '<span class="dim">select an item</span>'; return; }
+  const ev = detailFor === i.token && detail ? detail.events : null;
+  $('detail').innerHTML = `<h3>${esc(i.title)}</h3><div class="dim">${esc(i.token)} · ${esc(i.kind)} · ${esc(i.source)}${i.key ? ' / ' + esc(i.key) : ''} · ${esc(i.state)}${i.derived ? ' · derived' : ''}</div>`
+    + `<div>created ${ts(i.created_at)}${i.due_at ? ' · due ' + ts(i.due_at) : ''}${i.snoozed_until ? ' · snoozed until ' + ts(i.snoozed_until) : ''}${i.closed_at ? ` · closed ${ts(i.closed_at)} by ${esc(i.closed_by)}` : ''}</div>`
+    + (i.url ? `<div><a href="${esc(i.url)}" target="_blank" rel="noopener">${esc(i.url)}</a></div>` : '')
+    + (i.detail ? `<pre>${esc(i.detail)}</pre>` : '')
+    + (i.run_state ? `<h3 class="run-${esc(i.run_state)}">${esc(i.assigned_to || 'agent')}: ${RUN[i.run_state] || esc(i.run_state)} <small class="dim">${ts(i.run_at)}</small></h3><pre>${esc(i.run_result || (i.run_state === 'QUEUED' ? 'waiting for a worker to claim it' : i.run_state === 'RUNNING' ? 'running…' : ''))}</pre>` : '')
+    + `<h3>history</h3>` + (ev ? TLC.table([['time', e => ts(e.at)], ['what', e => `<span class="b">${esc(e.kind)}</span>`], ['who', e => esc(e.actor)], ['where', e => esc(e.surface || '')], ['', e => esc(e.detail || e.other || '')]], ev) : '<span class="dim">…</span>');
+}
+async function loadDetail() {
+  const i = data && data.items[cur];
+  if (!i) return;
+  try { const d = await api('GET', '/api/items/' + i.token); detail = d; detailFor = i.token; render(); } catch (e) { showErr(e); }
+}
+async function load() {
+  try {
+    data = await api('GET', `/api/items?state=${state}&limit=300`); okAt = Date.now(); showErr('');
+    if (state === 'open' && !document.body.classList.contains('redact')) {       // only what a person could actually have read
+      const now = Date.now(), due = data.items.slice(0, 40).map(i => i.token).filter(t => now - (shownAt.get(t) || 0) >= SHOWN_EVERY_MS);
+      if (due.length) api('POST', '/api/items/shown', {tokens: due, surface: 'console'}).then(() => due.forEach(t => shownAt.set(t, now))).catch(() => {});
+    }
+  } catch (e) { showErr('poll: ' + (e.message || e)); }
+  render();
+  loadDetail();
+}
+const tick = TLC.poll(load, 20000);
+async function act(verb, body) {
+  const i = data && data.items[cur];
+  if (!i) return;
+  try { await api('POST', `/api/items/${i.token}/${verb}`, {...body, surface: 'console'}); last = verb === 'reopen' ? null : i.token; } catch (e) { showErr(e); }
+  tick();
+}
+function showPair() {
+  const top = (data ? data.items : []).slice(0, 12);
+  if (state !== 'open' || top.length < 2) { pair = null; $('pick').classList.remove('on'); return; }
+  const a = top[Math.floor(Math.random() * top.length)];
+  let b = a; while (b === a) b = top[Math.floor(Math.random() * top.length)];
+  pair = [a, b];
+  $('pick').innerHTML = pair.map((i, n) => `<div data-p="${n}"><small>${n ? '→' : '←'} matters more · ${esc(i.kind)} · ${i.score.toFixed(1)}</small>${esc(i.title)}</div>`).join('');
+  $('pick').classList.add('on');
+}
+async function choose(n) {
+  if (!pair) return;
+  try { await api('POST', '/api/items/pick', {winner: pair[n].token, loser: pair[1 - n].token, surface: 'console'}); showPair(); } catch (e) { showErr(e); }
+}
+const move = n => { cur = n; detail = null; render(); loadDetail(); };
+addEventListener('keydown', e => {
+  if (e.metaKey || e.ctrlKey || e.altKey) return;
+  if (document.activeElement && document.activeElement.tagName === 'INPUT') { if (e.key === 'Escape') document.activeElement.blur(); return; }
+  const k = e.key, n = data ? data.items.length : 0;
+  if (pair && (k === 'ArrowLeft' || k === 'ArrowRight')) { e.preventDefault(); return void choose(k === 'ArrowLeft' ? 0 : 1); }
+  if (pair && k === 'Escape') { pair = null; $('pick').classList.remove('on'); return; }
+  if (k === 'j' || k === 'ArrowDown') { e.preventDefault(); move(Math.min(n - 1, cur + 1)); }
+  else if (k === 'k' || k === 'ArrowUp') { e.preventDefault(); move(Math.max(0, cur - 1)); }
+  else if (k === 'd') act('done');
+  else if (k === 'x') act('drop');
+  else if (k === 'h') act('snooze', {seconds: 3600});
+  else if (k === 's') act('snooze', {seconds: 86400});
+  else if (k === 'w') act('snooze', {seconds: 7 * 86400});
+  else if (k === 'c') { const i = data && data.items[cur]; if (i && state === 'open') act(i.run_state === 'QUEUED' ? 'recall' : 'delegate'); }
+  else if (k === 'u') { if (last) api('POST', `/api/items/${last}/reopen`, {surface: 'console'}).then(() => { last = null; tick(); }, showErr); else if (state !== 'open') act('reopen'); }
+  else if (k === 'p') { pair ? (pair = null, $('pick').classList.remove('on')) : showPair(); }
+  else if (k === 'a') { e.preventDefault(); $('add').focus(); }
+  else if (k === 'r') { const on = document.body.classList.toggle('redact'); try { localStorage.setItem('items.redact', on ? '1' : '0'); } catch (err) {} }
+  else if ('1234'.includes(k)) { state = STATES[+k - 1]; cur = 0; data = null; detail = null; render(); tick(); }
+});
+$('tabs').addEventListener('click', e => { const b = e.target.closest('[data-s]'); if (b) { state = b.dataset.s; cur = 0; data = null; detail = null; render(); tick(); } });
+$('rows').addEventListener('click', e => { const r = e.target.closest('[data-n]'); if (r) move(+r.dataset.n); });
+$('pick').addEventListener('click', e => { const d = e.target.closest('[data-p]'); if (d) choose(+d.dataset.p); });
+$('af').addEventListener('submit', async e => {
+  e.preventDefault();
+  let t = $('add').value.trim(), kind = 'idea';
+  if (t.startsWith('?')) { kind = 'question'; t = t.slice(1).trim(); } else if (t.startsWith('!')) { kind = 'todo'; t = t.slice(1).trim(); }
+  if (!t) return;
+  try { await api('POST', '/api/items', {title: t, kind, source: 'console'}); $('add').value = ''; $('add').blur(); tick(); } catch (err) { showErr(err); }
+});
+$('as').value = TLC.user;
+$('as').onchange = () => { TLC.setUser($('as').value); $('as').blur(); tick(); };
+document.addEventListener('tlc:user', () => { $('as').value = TLC.user; $('as').disabled = true; $('as').title = 'signed in: identity comes from the proxy'; tick(); });
+</script>
+</body></html>
