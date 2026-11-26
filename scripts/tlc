@@ -232,7 +232,7 @@ def n_item(v):
         if d.get("notes"): print("\n── notes ──"); [print(f"{n['at'][:16]} {n['author']}: {n['text']}") for n in d["notes"]]
         print(); table(d["events"], ["at", "kind", "actor", "surface", "other", "detail"])
     elif v == "note":         # context, or the answer to what an agent asked: tlc item note OL#8a5 "text" [--once = also queue the agent again]
-        t, text = need_(2, "item note OL#… TEXT [--delegate]")
+        t, text = need(2, "item note OL#… TEXT [--delegate]")
         emit(call("POST", f"/api/items/{_ol(t)}/note", {"text": text, "surface": A.surface or "cli", "delegate": True if A.delegate else None}), None, cols)
     elif v in ("tag", "untag"):
         t, *tags = A.args
@@ -243,7 +243,7 @@ def n_item(v):
         if not i.get("run_session"): sys.exit(f"OL#{i['code']} has no recorded agent session")
         os.chdir(os.path.expanduser("~")); os.execvp("claude", ["claude", "--resume", i["run_session"]])
     elif v == "run":          # the worker's side: tlc item run I-… RUNNING|DONE|NEEDS_YOU|FAILED [--note RESULT]
-        t, st = need_(2, "item run I-… STATE [--note RESULT] [--session ID]")
+        t, st = need(2, "item run I-… STATE [--note RESULT] [--session ID]")
         emit(call("POST", f"/api/items/{_ol(t)}/run", {"state": st, "result": A.note, "session": A.session}), None, cols)
     elif v in ("done", "drop", "reopen", "delegate", "recall"):
         emit(call("POST", f"/api/items/{needi(1, 'item ' + v + ' I-…')}/{v}", body()), None, cols)
