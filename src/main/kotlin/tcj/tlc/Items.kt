@@ -409,6 +409,11 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     val n = if (state == "RUNNING") c.exec("UPDATE items SET run_state = 'RUNNING', run_at_ms = ?, run_session = COALESCE(?, run_session), updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND run_state = 'QUEUED'", listOf(now, session, now, id))
     else c.exec("UPDATE items SET run_state = ?, run_at_ms = ?, run_result = ?, run_session = COALESCE(?, run_session), updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND run_state = 'RUNNING'",
       listOf(state, now, req.result?.take(16000), session, now, id))
+    if (n == 0 && state == "RUNNING" && session != null) {
+      // the claimant, a moment later, saying which session it started: not a second claim
+      if (c.exec("UPDATE items SET run_session = ?, updated_at_ms = ?, feed_sync_id = NULL WHERE id = ? AND run_state = 'RUNNING'", listOf(session, now, id)) == 1)
+        return@tx c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, now) }.first()
+    }
     if (n == 0) throw WebActionException(409, "item is not ${if (state == "RUNNING") "QUEUED" else "RUNNING"}", "item is not ${if (state == "RUNNING") "QUEUED" else "RUNNING"}")
     event(c, id, "RUN", actor, detail = state)
     c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, now) }.first()

@@ -1206,6 +1206,8 @@ class TlcServiceTest {
     assertThat(listOf(n["notes"], n["run_state"])).containsExactly(1.0, null)                          // a note alone starts nothing
     post("/api/items/$a/delegate")
     assertThat(post("/api/items/$a/run", mapOf("state" to "RUNNING", "session" to "sess-0"), user = null, service = "worker")["run_session"]).isEqualTo("sess-0")   // known at the claim
+    assertThat(post("/api/items/$a/run", mapOf("state" to "RUNNING", "session" to "sess-0b"), user = null, service = "worker")["run_session"]).isEqualTo("sess-0b")  // named a moment after the claim
+    assertThat(post("/api/items/$a/run", mapOf("state" to "RUNNING"), user = null, service = "worker2").code).isEqualTo(409)                                     // still not a second claim
     val r = post("/api/items/$a/run", mapOf("state" to "NEEDS_YOU", "result" to "which account paid them?", "session" to "sess-1"), user = null, service = "worker")
     assertThat(listOf(r["run_state"], r["run_session"], r["notes"])).containsExactly("NEEDS_YOU", "sess-1", 2.0)
     val ans = post("/api/items/$a/note", mapOf("text" to "the operating account", "delegate" to true))
