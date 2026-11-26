@@ -9,7 +9,9 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE, TLC_TOKEN (
 ~/.config/tlc/url, and TLC_USER to ~/.config/tlc/user before $USER.
 
   tlc item add TITLE [--kind todo|idea|question|broken|deploy|commit|chore|person|property] [--due ISO] [--note DETAIL] [--key K] [--source S] [--link URL] [--value HINT]
-  tlc item ls [--state open|snoozed|done|dropped|all] [--source S] [--kind K] | show I-… | done I-… | drop I-… [--note WHY] | reopen I-…
+  tlc item ls [--state open|snoozed|done|dropped|all] [--source S] [--kind K] [--tag T] | show OL#… | done OL#… | drop OL#… [--note WHY] | reopen OL#…
+  tlc item note OL#… TEXT [--delegate]   context or an answer (--delegate queues the agent again) | tag|untag OL#… TAG… | resume OL#… (open its agent session)
+  (an item is named by its short code, OL#8a5 or just 8a5, or by its I-… token; add takes --tag T[,T…])
   tlc item delegate I-… [--note HINT] | recall I-… | ls --status queued|running|done|needs_you|failed      hand it to an agent
   tlc item snooze I-… (--ttl SECONDS | --due ISO) | pick WINNER LOSER | sync SOURCE < items.json   (a derived source's whole current set)
   tlc mint-token SERVICE        print a new static API token and the tlc.api_tokens line that admits it
@@ -39,7 +41,7 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE, TLC_TOKEN (
   tlc feed status | cursors | fetch FEED [--after N] | follow FEED [--cursor-file F] | publish
   tlc summary TARGET | info | me
 """
-import argparse, json, os, sys, time, urllib.error, urllib.parse, urllib.request
+import argparse, json, os, re, sys, time, urllib.error, urllib.parse, urllib.request
 
 ALIAS = {"create": "mk", "read": "show", "get": "show", "update": "edit", "destroy": "rm", "list": "ls", "delete": "rm"}
 A = None
@@ -178,26 +180,54 @@ def n_log(v):
     else: bad(v)
 
 
+def _ol(t):
+    """An item reference as typed: I-…, 8a5, OL#8a5, ol#8A5. The '#' cannot travel in a URL path, so codes go bare."""
+    return t if t.startswith("I-") else re.sub(r"(?i)^ol#", "", t.strip())
+
+
+def needi(n, usage):
+    """need(), for arguments that are all item references."""
+    got = need(n, usage)
+    return _ol(got) if n == 1 else [_ol(x) for x in got]
+
+
 def n_item(v):
-    cols = ["token", "score", "kind", "source", "title", "due=due_at", "snoozed=snoozed_until", "state", "run=run_state", "created_at"]
+    cols = ["code", "score", "kind", "tags", "source", "title", "due=due_at", "snoozed=snoozed_until", "state", "run=run_state", "notes", "token"]
     body = lambda: {"surface": A.surface or "cli", "note": A.note}
+    tags = [t for t in (A.tag or "").split(",") if t] or None
     if v in ("add", "mk"):
-        emit(call("POST", "/api/items", {"title": need(1, "item add TITLE"), "kind": A.kind, "due_at": A.due, "detail": A.note, "key": A.key, "source": A.source, "url": A.link, "priority": A.value}), None, cols)
+        emit(call("POST", "/api/items", {"title": need(1, "item add TITLE"), "kind": A.kind, "due_at": A.due, "detail": A.note, "key": A.key, "source": A.source, "url": A.link, "priority": A.value, "tags": tags}), None, cols)
     elif v == "ls":
-        emit(call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit, run=A.status), "items", cols)
+        emit(call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit, run=A.status, tag=A.tag), "items", cols)
     elif v == "show":
-        d = call("GET", "/api/items/" + need(1, "item show I-…"))
+        d = call("GET", "/api/items/" + needi(1, "item show I-…"))
         if A.json: return emit(d)
-        table([d["item"]], cols); print(); table(d["events"], ["at", "kind", "actor", "surface", "other", "detail"])
+        i = d["item"]
+        table([i], cols)
+        if i.get("detail"): print("\n" + i["detail"])
+        if i.get("run_state"): print(f"\n── {i.get('assigned_to') or 'agent'}: {i['run_state']} at {i.get('run_at')}" + (f" · session {i['run_session']} (claude --resume {i['run_session']})" if i.get("run_session") else "") + " ──\n" + (i.get("run_result") or ""))
+        if d.get("notes"): print("\n── notes ──"); [print(f"{n['at'][:16]} {n['author']}: {n['text']}") for n in d["notes"]]
+        print(); table(d["events"], ["at", "kind", "actor", "surface", "other", "detail"])
+    elif v == "note":         # context, or the answer to what an agent asked: tlc item note OL#8a5 "text" [--once = also queue the agent again]
+        t, text = need_(2, "item note OL#… TEXT [--delegate]")
+        emit(call("POST", f"/api/items/{_ol(t)}/note", {"text": text, "surface": A.surface or "cli", "delegate": True if A.delegate else None}), None, cols)
+    elif v in ("tag", "untag"):
+        t, *tags = A.args
+        if not tags: bad("item tag|untag OL#… TAG…")
+        emit(call("POST", f"/api/items/{_ol(t)}/tag", {"surface": A.surface or "cli", ("tags" if v == "tag" else "untag"): tags}), None, cols)
+    elif v == "resume":       # open the agent session of the item's last run in this terminal
+        i = call("GET", "/api/items/" + needi(1, "item resume OL#…"))["item"]
+        if not i.get("run_session"): sys.exit(f"OL#{i['code']} has no recorded agent session")
+        os.chdir(os.path.expanduser("~")); os.execvp("claude", ["claude", "--resume", i["run_session"]])
     elif v == "run":          # the worker's side: tlc item run I-… RUNNING|DONE|NEEDS_YOU|FAILED [--note RESULT]
-        t, st = need(2, "item run I-… STATE [--note RESULT]")
-        emit(call("POST", f"/api/items/{t}/run", {"state": st, "result": A.note}), None, cols)
+        t, st = need_(2, "item run I-… STATE [--note RESULT] [--session ID]")
+        emit(call("POST", f"/api/items/{_ol(t)}/run", {"state": st, "result": A.note, "session": A.session}), None, cols)
     elif v in ("done", "drop", "reopen", "delegate", "recall"):
-        emit(call("POST", f"/api/items/{need(1, 'item ' + v + ' I-…')}/{v}", body()), None, cols)
+        emit(call("POST", f"/api/items/{needi(1, 'item ' + v + ' I-…')}/{v}", body()), None, cols)
     elif v == "snooze":
-        emit(call("POST", f"/api/items/{need(1, 'item snooze I-… --ttl SECONDS | --due ISO')}/snooze", {**body(), "seconds": A.ttl, "until": A.due}), None, cols)
+        emit(call("POST", f"/api/items/{needi(1, 'item snooze I-… --ttl SECONDS | --due ISO')}/snooze", {**body(), "seconds": A.ttl, "until": A.due}), None, cols)
     elif v == "pick":
-        w, l = need(2, "item pick WINNER LOSER")
+        w, l = needi(2, "item pick WINNER LOSER")
         emit(call("POST", "/api/items/pick", {"winner": w, "loser": l, "surface": A.surface or "cli"}))
     elif v == "sync":
         emit(call("POST", "/api/items/sync", {"source": need(1, "item sync SOURCE < items.json"), "items": json.load(sys.stdin)}), None, ["source", "opened", "updated", "reopened", "closed", "open"])
@@ -517,6 +547,8 @@ def main():
         p.add_argument(("-q" if f == "q" else "--" + f), default=None)
     p.add_argument("--from", dest="from_", default=None)
     p.add_argument("--group", action="append")
+    p.add_argument("--session", default=None)
+    p.add_argument("--delegate", action="store_true")
     p.add_argument("--aspect", action="append")
     p.add_argument("--impact", action="append")
     p.add_argument("--check", action="append")

@@ -1158,6 +1158,68 @@ class TlcServiceTest {
   }
 
   @Test
+  fun `an item has a short code that works wherever its token does`() {
+    val seen = HashSet<String>()
+    for (id in 1L..40_000L) {
+      val code = ItemCode.of(id)
+      assertThat(seen.add(code)).isTrue()
+      assertThat(code.length).isEqualTo(if (id <= 29_791) 3 else 4)
+      assertThat(ItemCode.idOf(code)).isEqualTo(id)
+    }
+    assertThat(seen.joinToString("")).doesNotContain("0", "1", "i", "l", "o")
+    assertThat(ItemCode.idOf("I-abc")).isNull()
+    val a = post("/api/items", mapOf("title" to "which invoice is this payment for", "kind" to "question"))
+    val code = a["code"] as String
+    assertThat(get("/api/items/$code").obj("item")["token"]).isEqualTo(a["token"])
+    assertThat(get("/api/items/${code.uppercase()}").obj("item")["token"]).isEqualTo(a["token"])       // case does not matter
+    assertThat(post("/api/items/$code/snooze", mapOf("seconds" to 60))["snoozed_until"]).isNotNull()
+    assertThat(get("/api/items/zzz").code).isEqualTo(404)
+  }
+
+  @Test
+  fun `tags group items, default from the kind, and nudge home chores above fixes`() {
+    val chore = post("/api/items", mapOf("title" to "bins", "kind" to "chore"))
+    val fix = post("/api/items", mapOf("title" to "inforad is 3 commits behind", "kind" to "deploy"))
+    val q = post("/api/items", mapOf("title" to "which plan", "kind" to "question", "tags" to listOf("Research", "apt")))
+    assertThat(listOf(chore["tags"], fix["tags"], q["tags"])).containsExactly(listOf("home"), listOf("fix"), listOf("apt", "research"))
+    assertThat((chore["score"] as Double) - (fix["score"] as Double)).isEqualTo(0.5)                   // same kind weight, +0.25 vs -0.25
+    assertThat(titles("/api/items?tag=apt")).containsExactly("which plan")
+    assertThat(get("/api/items").obj("tags")).containsEntry("home", 1.0).containsEntry("fix", 1.0).containsEntry("apt", 1.0).containsEntry("research", 1.0)
+    val t = fix["token"] as String
+    assertThat(post("/api/items/$t/tag", mapOf("tags" to listOf("lab"), "untag" to listOf("fix")))["tags"]).isEqualTo(listOf("lab"))
+    assertThat(post("/api/items/$t/tag", mapOf("untag" to listOf("lab")))["tags"]).isEqualTo(listOf<String>())
+    assertThat(titles("/api/items?tag=-")).containsExactly("inforad is 3 commits behind")
+    assertThat(post("/api/items/$t/tag", mapOf("tags" to listOf("Not OK"))).code).isEqualTo(400)
+    // a derived source's tags apply when the item is new; a later sync does not undo a person's retag
+    post("/api/items/sync", mapOf("source" to "srcage", "items" to listOf(mapOf("key" to "k", "title" to "behind", "kind" to "deploy", "tags" to listOf("lab")))))
+    val d = get("/api/items?source=srcage").list("items").single()
+    post("/api/items/${d["token"]}/tag", mapOf("tags" to listOf("home"), "untag" to listOf("lab")))
+    post("/api/items/sync", mapOf("source" to "srcage", "items" to listOf(mapOf("key" to "k", "title" to "behind", "kind" to "deploy", "tags" to listOf("lab")))))
+    assertThat(get("/api/items?source=srcage").list("items").single()["tags"]).isEqualTo(listOf("home"))
+  }
+
+  @Test
+  fun `notes are a thread on the item, and answering an agent's question queues it again with its session`() {
+    val a = post("/api/items", mapOf("title" to "reconcile the March invoices", "kind" to "todo"))["token"] as String
+    assertThat(post("/api/items/$a/note", mapOf("text" to " ")).code).isEqualTo(400)
+    val n = post("/api/items/$a/note", mapOf("text" to "these are the supplier ones", "surface" to "phone"))
+    assertThat(listOf(n["notes"], n["run_state"])).containsExactly(1.0, null)                          // a note alone starts nothing
+    post("/api/items/$a/delegate")
+    post("/api/items/$a/run", mapOf("state" to "RUNNING"), user = null, service = "worker")
+    val r = post("/api/items/$a/run", mapOf("state" to "NEEDS_YOU", "result" to "which account paid them?", "session" to "sess-1"), user = null, service = "worker")
+    assertThat(listOf(r["run_state"], r["run_session"], r["notes"])).containsExactly("NEEDS_YOU", "sess-1", 2.0)
+    val ans = post("/api/items/$a/note", mapOf("text" to "the operating account", "delegate" to true))
+    assertThat(listOf(ans["run_state"], ans["run_session"], ans["run_result"])).containsExactly("QUEUED", "sess-1", null)   // the session survives for the worker to resume
+    assertThat(post("/api/items/$a/note", mapOf("text" to "from the operating account", "delegate" to true))["run_state"]).isEqualTo("QUEUED")   // already queued: just adds the note
+    val d = get("/api/items/$a")
+    assertThat(d.list("notes").map { it["text"] }).containsExactly("these are the supplier ones", "[NEEDS_YOU] which account paid them?", "the operating account", "from the operating account")
+    assertThat(d.list("notes").map { it["author"] }.toSet()).hasSize(2)
+    val thread = d.obj("item")["thread"] as String
+    assertThat(get("/api/threads/$thread").obj("thread")["target"]).isEqualTo(a)                       // an ordinary TLC thread about the item
+    assertThat(d.list("events").map { it["kind"] }).contains("NOTED", "DELEGATED")
+  }
+
+  @Test
   fun `items are a feed of latest states, and a sync that changes nothing publishes nothing`() {
     fun sync(title: String) = post("/api/items/sync", mapOf("items" to listOf(mapOf("key" to "inforad-net", "title" to title, "kind" to "deploy"))), user = null, service = "srcage")
     fun page(after: Any? = 0) = ok(get("/_feeds/fetch/items?after=$after"))

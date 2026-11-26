@@ -246,7 +246,7 @@ class EntityStore @Inject constructor(
 
   /**
    * Any target: an external entity (as above) or a TLC-internal object by token (T- thread,
-   * C- comment, AP- approvable). With [create] false nothing is vivified: unknown refs are a 404,
+   * C- comment, AP- approvable, I- item). With [create] false nothing is vivified: unknown refs are a 404,
    * which is what read paths want.
    */
   fun resolve(c: Connection, ref: String, create: Boolean): Target {
@@ -255,6 +255,7 @@ class EntityStore @Inject constructor(
       r.startsWith("T-") -> "threads" to "token"
       r.startsWith("C-") -> "comments" to "comment_token"
       r.startsWith("AP-") -> "approvables" to "token"
+      r.startsWith("I-") -> "items" to "token"
       else -> return resolveEntity(c, r, create)
     }
     c.select("SELECT id FROM ${table.first} WHERE ${table.second} = ?", listOf(r)) { it.getLong(1) }.firstOrNull() ?: throw NotFoundException("no ${table.first.dropLast(1)} '$r'")

@@ -14,6 +14,31 @@ POST /api/items/shown      {"tokens":["I-…","I-…"],"surface":"far"}
 POST /api/items/pick       {"winner":"I-…","loser":"I-…","surface":"deck"}
 ```
 
+## Codes, notes, tags
+
+```sh
+GET  /api/items/8a5                         any item path takes the short code in place of the token (any case)
+POST /api/items/8a5/note    {"text":"paid from the operating account","delegate":true,"surface":"phone"}
+POST /api/items/8a5/tag     {"tags":["apt"],"untag":["fix"]}
+GET  /api/items?tag=apt     (tag=- lists the untagged)      -> also {tags:{apt:3, home:2, "-":9}} for the open set
+```
+
+- **Code.** Each item has a short code, written `OL#8a5`: three characters (four past 29,791 items) from
+  `23456789abcdefghjkmnpqrstuvwxyz`, so nothing in it can be misread as 0/o or 1/i/l. It is a fixed scramble of the
+  row id, so it never changes and is not stored. In a URL path use it bare (`#` starts a fragment); the CLI accepts
+  `OL#8a5`, `ol#8A5` and `8a5`.
+- **Notes.** An item has one thread, an ordinary TLC thread whose target is the item (`thread` on the item,
+  `notes` = its comment count, `GET /api/items/…` returns them oldest first). `…/note` appends to it. With
+  `"delegate": true` the agent is queued again afterwards, which is how a `NEEDS_YOU` question gets answered; if a
+  run is already queued or in flight the note is just added. A worker's results are appended as `[STATE] text`, so
+  the thread reads: context, result or question, answer, next result.
+- **Session.** A worker may report `"session"` with a result; it is kept as `run_session` across later
+  delegations, so the next run can resume the same agent session and a person can open it.
+- **Tags.** Up to a few slugs (`a-z0-9-`). A new item with none gets one from its kind or source: `property` →
+  `apt`, `chore` → `home`, `person` → `family`, `idea` → `idea`, `deploy`/`commit`/`broken` → `fix`. `POST /api/items`
+  with `tags` sets them; a sync's `tags` apply only when the item is new, so a person's retag sticks. Two tags move
+  the order: `home` +0.25 and `fix` −0.25, which puts a home chore above a fix of the same kind and age.
+
 ## Two kinds of source
 
 | | captured | derived |
@@ -83,5 +108,5 @@ polling the list; use the events below for the history of one item.
 
 Every item has an append-only history (`GET /api/items/I-…`): `CREATED`, `SHOWN` (with the surface and position it
 was shown at), `PICKED` (preferred over `other` when asked to choose between two), `SNOOZED`, `DONE`, `DROPPED`,
-`REOPENED`, `RESOLVED` (closed by its source), `DELEGATED`, `RECALLED`, `RUN` (each state a worker reported). Surfaces that display items should report `shown` for what was
+`REOPENED`, `RESOLVED` (closed by its source), `DELEGATED`, `RECALLED`, `RUN` (each state a worker reported), `NOTED`, `TAGGED`. Surfaces that display items should report `shown` for what was
 actually on screen: shown-and-passed-over is the signal that cannot be reconstructed afterwards.

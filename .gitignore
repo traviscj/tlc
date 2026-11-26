@@ -4,3 +4,4 @@ build
 .idea
 tlc-local.yaml
 .tlc-cursor*
+__pycache__/
