@@ -12,6 +12,7 @@ Env: TLC_URL (http://localhost:8790), TLC_USER ($USER), TLC_SERVICE, TLC_TOKEN (
   tlc item ls [--state open|snoozed|done|dropped|all] [--source S] [--kind K] [--tag T] | show OL#… | done OL#… | drop OL#… [--note WHY] | reopen OL#…
   tlc item note OL#… TEXT [--delegate]   context or an answer (--delegate queues the agent again) | tag|untag OL#… TAG… | resume OL#… (open its agent session)
   tlc item fz [--tag T] [--state S]   pick with fzf: enter prints OL#code and copies 're OL#code, '; ^d done ^x drop ^h/^s/^w snooze ^t tell claude
+  redaction: -r -1 shows everything, -r 0 hides private items (the default on a terminal), -r inf hides all
   (an item is named by its short code, OL#8a5 or just 8a5, or by its I-… token; add takes --tag T[,T…])
   tlc item delegate I-… [--note HINT] | recall I-… | ls --status queued|running|done|needs_you|failed      hand it to an agent
   tlc item snooze I-… (--ttl SECONDS | --due ISO) | pick WINNER LOSER | sync SOURCE < items.json   (a derived source's whole current set)
@@ -192,6 +193,12 @@ def needi(n, usage):
     return _ol(got) if n == 1 else [_ol(x) for x in got]
 
 
+def _redact():
+    """-1 everything, 0 hide private items, inf hide all. On a terminal the default is 0; piped or --json it is -1."""
+    r = A.redact or os.environ.get("TLC_REDACT") or _conf("redact")
+    return r if r else ("0" if sys.stdout.isatty() and not A.json else "-1")
+
+
 def n_item(v):
     cols = ["score", "kind", "tags", "code", "title", "due=due_at", "snoozed=snoozed_until", "run=run_state", "notes", "source", "state", "token"]
     body = lambda: {"surface": A.surface or "cli", "note": A.note}
@@ -199,9 +206,9 @@ def n_item(v):
     if v in ("add", "mk"):
         emit(call("POST", "/api/items", {"title": need(1, "item add TITLE"), "kind": A.kind, "due_at": A.due, "detail": A.note, "key": A.key, "source": A.source, "url": A.link, "priority": A.value, "tags": tags}), None, cols)
     elif v == "ls":
-        emit(call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit, run=A.status, tag=A.tag), "items", cols)
+        emit(call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit, run=A.status, tag=A.tag, redact=_redact()), "items", cols)
     elif v == "lines":        # one item per line for a picker: code first, then what `ls` shows
-        for i in call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit or 500, tag=A.tag)["items"]:
+        for i in call("GET", "/api/items", state=A.state, source=A.source, kind=A.kind, limit=A.limit or 500, tag=A.tag, redact=A.redact or os.environ.get("TLC_REDACT") or _conf("redact") or "0")["items"]:
             due = (" due " + i["due_at"][5:16].replace("T", " ")) if i.get("due_at") else ""
             run = f" [{i['run_state'].lower()}]" if i.get("run_state") else ""
             print(f"{i['code']}\t{i['score']:5.2f}  {i['kind']:<9} {' '.join('#' + t for t in i.get('tags') or []):<10} {i['title']}{run}{due}{' ✎' + str(i['notes']) if i.get('notes') else ''}")
@@ -223,7 +230,7 @@ def n_item(v):
             print("OL#" + code)
             if shutil.which("pbcopy"): subprocess.run(["pbcopy"], input=f"re OL#{code}, ", text=True)
     elif v == "show":
-        d = call("GET", "/api/items/" + needi(1, "item show I-…"))
+        d = call("GET", "/api/items/" + needi(1, "item show I-…"), redact=_redact())
         if A.json: return emit(d)
         i = d["item"]
         table([i], cols)
@@ -571,6 +578,7 @@ def main():
     p.add_argument("--from", dest="from_", default=None)
     p.add_argument("--group", action="append")
     p.add_argument("--session", default=None)
+    p.add_argument("-r", "--redact", default=None, help="items: -1 show everything, 0 hide private items, inf hide all")
     p.add_argument("--delegate", action="store_true")
     p.add_argument("--aspect", action="append")
     p.add_argument("--impact", action="append")

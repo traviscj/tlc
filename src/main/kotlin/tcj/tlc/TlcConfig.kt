@@ -32,6 +32,12 @@ data class TlcSettings(
   val requirements: List<String>? = null,
   /** A reply to a comment already at this depth is filed as its sibling instead of nesting further. */
   val max_comment_depth: Int = 16,
+  /**
+   * Items a screen should not show to whoever walks past: an item whose title, source or key matches one of these
+   * regexes (case-insensitive) is `private`, as is any item tagged `private`; the tag `public` overrides a match.
+   * See "Redaction" in docs/items.md.
+   */
+  val item_private_patterns: List<String> = listOf(),
   /** Slack incoming-webhook URL. null = SLACK notifications are logged, not sent. */
   val slack_webhook_url: String? = null,
   /** An ownership claim nobody has re-affirmed for this long reads LAPSED. */

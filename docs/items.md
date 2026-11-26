@@ -39,6 +39,25 @@ GET  /api/items?tag=apt     (tag=- lists the untagged)      -> also {tags:{apt:3
   with `tags` sets them; a sync's `tags` apply only when the item is new, so a person's retag sticks. Two tags move
   the order: `home` +0.25 and `fix` −0.25, which puts a home chore above a fix of the same kind and age.
 
+## Redaction
+
+```sh
+GET /api/items?redact=-1|0|inf        GET /api/items/8a5?redact=0
+```
+
+| level | shows |
+|---|---|
+| `-1` (or no `redact`) | everything |
+| `0` | everything except the text of **private** items |
+| `inf` | no item's text |
+
+An item is private when it is tagged `private`, or when its title, source or key matches one of the deployment's
+`item_private_patterns` (regexes, case-insensitive; the tag `public` overrides a match). A blanked item has
+`redacted: true`, a placeholder title, and no detail, url, key, result, notes or event details; it keeps its code,
+kind, tags, score, dates and run state, so a screen can still count it, order it and act on it. Redaction is applied
+by the server, so a display that asks for level 0 never receives the text. The CLI defaults to `0` on a terminal
+and `-1` when its output is piped or `--json` (`--redact`, `TLC_REDACT`, or `~/.config/tlc/redact` set it).
+
 ## Two kinds of source
 
 | | captured | derived |

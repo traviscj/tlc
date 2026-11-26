@@ -49,6 +49,11 @@ import misk.web.actions.WebAction
  * **Tags.** A few short slugs per item (`apt`, `home`, `fix`, …) to group and filter by. A new item with none gets
  * one from its kind or source ([ItemStore.defaultTags]); `home` and `fix` nudge the order ([ItemStore.TAG_WEIGHT]).
  *
+ * **Redaction.** Some items should not be readable on a screen other people see. An item is `private` when it is
+ * tagged `private` or matches a configured pattern (`item_private_patterns`; the tag `public` overrides). Reads take
+ * `redact`: `-1` shows everything, `0` blanks the text of private items, `inf` blanks every item. A blanked item
+ * keeps its code, kind, tags, score, dates and run state, so it can still be counted, ordered and acted on.
+ *
  * `items` is a feed (see Feeds.kt): every change a reader can see NULLs `feed_sync_id` and the item is published
  * again in its new state. A sync that changes nothing publishes nothing, and neither does time passing (a snooze
  * running out, a deadline nearing): the feed carries `snoozed_until` and `due_at` for consumers to apply themselves.
@@ -111,6 +116,8 @@ data class ItemDto(
   val notes: Int = 0, val thread: String? = null,
   /** The agent session of the last run, when the worker reported one: what to resume to continue or look inside it. */
   val run_session: String? = null,
+  /** Not for a shared screen (see Redaction); [redacted] says this copy has had its text blanked. */
+  val private: Boolean = false, val redacted: Boolean = false,
 )
 data class ItemNoteDto(val at: String, val author: String, val text: String)
 data class ItemEventDto(val at: String, val kind: String, val actor: String, val surface: String?, val other: String?, val detail: String?)
@@ -172,6 +179,20 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     }
   }
 
+  private val privatePatterns = config.tlc.item_private_patterns.map { Regex(it, RegexOption.IGNORE_CASE) }
+
+  private fun isPrivate(tags: List<String>, title: String, source: String, key: String): Boolean =
+    "private" in tags || ("public" !in tags && privatePatterns.any { it.containsMatchIn(title) || it.containsMatchIn(source) || it.containsMatchIn(key) })
+
+  /** `-1` (or nothing) = show all, `0` = blank private items, `inf` = blank everything. */
+  private fun blank(i: ItemDto, redact: String?): ItemDto = when (redact?.trim()?.lowercase()) {
+    null, "", "-1", "none" -> i
+    "0" -> if (i.private) hide(i, "(private)") else i
+    "inf", "all", "∞" -> hide(i, "(redacted)")
+    else -> throw BadRequestException("redact is -1|0|inf")
+  }
+  private fun hide(i: ItemDto, label: String) = i.copy(title = label, detail = null, url = null, key = "", run_result = null, redacted = true)
+
   private fun tagsOf(s: String?): List<String> = s?.split(' ')?.filter { it.isNotEmpty() } ?: listOf()
 
   private fun dto(rs: ResultSet, now: Long) = ItemDto(
@@ -184,6 +205,7 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     rs.getString("assigned_to"), rs.getString("run_state"), rs.isoOrNull("run_at_ms"), rs.getString("run_result"),
     rs.longOrNull("feed_sync_id"), rs.getInt("shard"),
     ItemCode.of(rs.getLong("id")), tagsOf(rs.getString("tags")), rs.getInt("notes"), rs.getString("thread_token"), rs.getString("run_session"),
+    isPrivate(tagsOf(rs.getString("tags")), rs.getString("title"), rs.getString("source"), rs.getString("source_key")),
   )
 
   private fun event(c: Connection, itemId: Long, kind: String, actor: Actor, surface: String? = null, other: Long? = null, detail: String? = null) {
@@ -279,7 +301,7 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     ItemSyncResp(source, results.count { it == "opened" }, results.count { it == "updated" }, results.count { it == "reopened" }, closed, open)
   }
 
-  fun list(state: String?, source: String?, kind: String?, limit: Int, run: String? = null, assigned: String? = null, tag: String? = null): ItemList = db.tx { c ->
+  fun list(state: String?, source: String?, kind: String?, limit: Int, run: String? = null, assigned: String? = null, tag: String? = null, redact: String? = null): ItemList = db.tx { c ->
     val now = clock.millis()
     val counts = linkedMapOf("open" to 0, "snoozed" to 0, "done" to 0, "dropped" to 0)
     c.select("SELECT state, (snoozed_until_ms IS NOT NULL AND snoozed_until_ms > ?) AS z, COUNT(*) FROM items GROUP BY state, z", listOf(now)) {
@@ -308,10 +330,10 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     }
     // The score depends on the clock, so it is computed here and sorted in memory; open loops are counted in hundreds.
     val rows = c.select("SELECT * FROM items ${if (where.isEmpty()) "" else "WHERE " + where.joinToString(" AND ")} ORDER BY id LIMIT 5000", args) { dto(it, now) }
-    ItemList(rows.sortedWith(compareByDescending<ItemDto> { it.score }.thenBy { it.created_at }).take(limit), counts, byTag)
+    ItemList(rows.sortedWith(compareByDescending<ItemDto> { it.score }.thenBy { it.created_at }).take(limit).map { blank(it, redact) }, counts, byTag)
   }
 
-  fun get(token: String): ItemDetail = db.tx { c ->
+  fun get(token: String, redact: String? = null): ItemDetail = db.tx { c ->
     val id = idOf(c, token)
     val item = c.select("SELECT * FROM items WHERE id = ?", listOf(id)) { dto(it, clock.millis()) }.first()
     val events = c.select("SELECT e.*, o.token AS other FROM item_events e LEFT JOIN items o ON o.id = e.other_item_id WHERE e.item_id = ? ORDER BY e.id DESC LIMIT 200", listOf(id)) {
@@ -320,7 +342,8 @@ class ItemStore @Inject constructor(private val db: Db, private val clock: Clock
     item to events
   }.let { (item, events) ->
     val notes = item.thread?.let { t -> comments.getThread(t, null).comments.filter { it.deleted_at == null }.map { ItemNoteDto(it.commented_at, it.author, it.content) } } ?: listOf()
-    ItemDetail(item, events, notes)
+    val shown = blank(item, redact)
+    if (shown.redacted) ItemDetail(shown, events.map { it.copy(detail = null) }, listOf()) else ItemDetail(item, events, notes)
   }
 
   /** Appends [text] to the item's thread, opening the thread on the first note. Returns the thread token. */
@@ -454,8 +477,8 @@ class ItemActions @Inject constructor(private val store: ItemStore, private val 
   fun pick(@RequestBody req: ItemPickReq) = store.pick(actors.current(), req)
 
   @Get("/api/items") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
-  fun list(@QueryParam state: String?, @QueryParam source: String?, @QueryParam kind: String?, @QueryParam limit: Int?, @QueryParam run: String?, @QueryParam assigned: String?, @QueryParam tag: String?) =
-    store.list(state, source, kind, limitOf(limit), run, assigned, tag)
+  fun list(@QueryParam state: String?, @QueryParam source: String?, @QueryParam kind: String?, @QueryParam limit: Int?, @QueryParam run: String?, @QueryParam assigned: String?, @QueryParam tag: String?, @QueryParam redact: String?) =
+    store.list(state, source, kind, limitOf(limit), run, assigned, tag, redact)
 
   @Post("/api/items/{token}/run") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
   fun run(@PathParam token: String, @RequestBody req: ItemRunReq) = store.run(actors.current(), token, req)
@@ -464,7 +487,7 @@ class ItemActions @Inject constructor(private val store: ItemStore, private val 
   fun note(@PathParam token: String, @RequestBody req: ItemNoteReq) = store.note(actors.current(), token, req)
 
   @Get("/api/items/{token}") @Authenticated(capabilities = [USER]) @ResponseContentType(JSON)
-  fun get(@PathParam token: String) = store.get(token)
+  fun get(@PathParam token: String, @QueryParam redact: String?) = store.get(token, redact)
 
   @Post("/api/items/{token}/{verb}") @Authenticated(capabilities = [USER]) @RequestContentType(JSON) @ResponseContentType(JSON)
   fun act(@PathParam token: String, @PathParam verb: String, @RequestBody req: ItemActionReq) = store.act(actors.current(), token, verb, req)

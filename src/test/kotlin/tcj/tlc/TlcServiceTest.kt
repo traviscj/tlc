@@ -1222,6 +1222,26 @@ class TlcServiceTest {
   }
 
   @Test
+  fun `redaction blanks private items at level 0 and everything at inf, keeping what is needed to act on them`() {
+    val a = post("/api/items", mapOf("title" to "call the roofer", "kind" to "property"))["token"] as String
+    val b = post("/api/items", mapOf("title" to "sort the holiday photos", "kind" to "todo", "tags" to listOf("private")))
+    assertThat(listOf(b["private"], b["redacted"])).containsExactly(true, false)
+    post("/api/items/${b["token"]}/note", mapOf("text" to "the 2019 ones"))
+    assertThat(titles("/api/items?redact=-1")).containsExactlyInAnyOrder("call the roofer", "sort the holiday photos")
+    assertThat(titles("/api/items")).containsExactlyInAnyOrder("call the roofer", "sort the holiday photos")          // no level = everything
+    assertThat(titles("/api/items?redact=0")).containsExactlyInAnyOrder("call the roofer", "(private)")
+    assertThat(titles("/api/items?redact=inf")).containsExactly("(redacted)", "(redacted)")
+    val hidden = get("/api/items?redact=0").list("items").first { it["redacted"] == true }
+    assertThat(listOf(hidden["code"], hidden["token"], hidden["detail"], hidden["tags"])).containsExactly(b["code"], b["token"], null, listOf("private"))
+    val d = get("/api/items/${b["code"]}?redact=0")
+    assertThat(d.list("notes")).isEmpty()
+    assertThat(d.list("events").map { it["detail"] }.toSet()).containsExactly(null)
+    assertThat(get("/api/items/${b["code"]}").list("notes")).hasSize(1)
+    assertThat(get("/api/items/$a?redact=0").obj("item")["title"]).isEqualTo("call the roofer")
+    assertThat(get("/api/items?redact=7").code).isEqualTo(400)
+  }
+
+  @Test
   fun `items are a feed of latest states, and a sync that changes nothing publishes nothing`() {
     fun sync(title: String) = post("/api/items/sync", mapOf("items" to listOf(mapOf("key" to "inforad-net", "title" to title, "kind" to "deploy"))), user = null, service = "srcage")
     fun page(after: Any? = 0) = ok(get("/_feeds/fetch/items?after=$after"))
